@@ -7,10 +7,13 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		038A6257F9F828F27AB9FC51 /* LibraryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5A8091EEE55013E553A518A /* LibraryView.swift */; };
 		1BC15C91A1C2E00218969B60 /* TonePlayer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2F7E6CCD1B31618C1B1B69E9 /* TonePlayer.swift */; };
+		2E4D6610280C0809FFBD35B4 /* TrackLibrary.swift in Sources */ = {isa = PBXBuildFile; fileRef = EFF0EFA676267FAD2F29092A /* TrackLibrary.swift */; };
 		4218216A06C204B85F3EC1D5 /* RangeFinderModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = BA12FA01879EB7118DCA1A93 /* RangeFinderModel.swift */; };
 		49E2BA3C363277ED4CB0315C /* EarModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 23F065C0D65A64A487B741C5 /* EarModel.swift */; };
 		4FE033B3F09CA38C6BCAE9A9 /* RecallView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9342F7162A75633C3D207CF1 /* RecallView.swift */; };
+		5214047A20B5CC89A141C520 /* TrackModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8FC6A90917DCDF1672CAFAB3 /* TrackModels.swift */; };
 		54400838F22573740BBCB0BB /* RecallModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = B09C67A07F93A54F39B1B767 /* RecallModel.swift */; };
 		7B08CB4DD57D8B753DDA2E25 /* HeldApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 25E08C8DA2F0857061969F16 /* HeldApp.swift */; };
 		7CAD846F0BEAF22EB20CC98D /* YIN.swift in Sources */ = {isa = PBXBuildFile; fileRef = 70665102539D1C1019AC353D /* YIN.swift */; };
@@ -19,6 +22,10 @@
 		A467EC62AACCB20A6B5B850E /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D5C1F8A06C2F3A57793AE7A5 /* ContentView.swift */; };
 		B332150171251C9B7B1E308A /* EarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A6C891FAF559CEBEA702C64 /* EarView.swift */; };
 		B6B9B124AA0C76D001A30530 /* IntervalView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 370B215F64939D0209B25DF3 /* IntervalView.swift */; };
+		C51F68C753865FFE1AE7879F /* Secrets.swift in Sources */ = {isa = PBXBuildFile; fileRef = F254EB618FA46D39546DBCE4 /* Secrets.swift */; };
+		D577D521FE3E7B33ACC3D866 /* SongPracticeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F9CAB623015C78132D0F22E7 /* SongPracticeView.swift */; };
+		E651A1A62A87FA2DFD7FC12E /* SongModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = BCFFC18F6444E41CC9B0998F /* SongModel.swift */; };
+		EA630700A36F7BAA75A835E3 /* Keychain.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6C76CF2423383181C70D93D6 /* Keychain.swift */; };
 		F0F06E9A2D1CB63DA9662C96 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = EE3D50E6DAD917221931BCC7 /* Assets.xcassets */; };
 		F65DAA54E23618D12F49EE78 /* RangeFinderView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B8C70934EB10F1972898F0D9 /* RangeFinderView.swift */; };
 /* End PBXBuildFile section */
@@ -29,17 +36,24 @@
 		25E08C8DA2F0857061969F16 /* HeldApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HeldApp.swift; sourceTree = "<group>"; };
 		2F7E6CCD1B31618C1B1B69E9 /* TonePlayer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TonePlayer.swift; sourceTree = "<group>"; };
 		370B215F64939D0209B25DF3 /* IntervalView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IntervalView.swift; sourceTree = "<group>"; };
+		6C76CF2423383181C70D93D6 /* Keychain.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Keychain.swift; sourceTree = "<group>"; };
 		6F240256A9CF8B9F8B87588A /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		70665102539D1C1019AC353D /* YIN.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = YIN.swift; sourceTree = "<group>"; };
+		8FC6A90917DCDF1672CAFAB3 /* TrackModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrackModels.swift; sourceTree = "<group>"; };
 		9342F7162A75633C3D207CF1 /* RecallView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecallView.swift; sourceTree = "<group>"; };
 		A0D0E2D9E1BED7DE6B42DC12 /* Held.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Held.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		B09C67A07F93A54F39B1B767 /* RecallModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecallModel.swift; sourceTree = "<group>"; };
 		B8C70934EB10F1972898F0D9 /* RangeFinderView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RangeFinderView.swift; sourceTree = "<group>"; };
 		BA12FA01879EB7118DCA1A93 /* RangeFinderModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RangeFinderModel.swift; sourceTree = "<group>"; };
+		BCFFC18F6444E41CC9B0998F /* SongModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SongModel.swift; sourceTree = "<group>"; };
 		CF29D46DA940091CB78D046C /* IntervalModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IntervalModel.swift; sourceTree = "<group>"; };
 		D5C1F8A06C2F3A57793AE7A5 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
+		E5A8091EEE55013E553A518A /* LibraryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryView.swift; sourceTree = "<group>"; };
 		EE3D50E6DAD917221931BCC7 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		EFF0EFA676267FAD2F29092A /* TrackLibrary.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrackLibrary.swift; sourceTree = "<group>"; };
+		F254EB618FA46D39546DBCE4 /* Secrets.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Secrets.swift; sourceTree = "<group>"; };
 		F7914B3F9D00CC40B977FB5F /* PitchEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PitchEngine.swift; sourceTree = "<group>"; };
+		F9CAB623015C78132D0F22E7 /* SongPracticeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SongPracticeView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
@@ -54,12 +68,19 @@
 				6F240256A9CF8B9F8B87588A /* Info.plist */,
 				CF29D46DA940091CB78D046C /* IntervalModel.swift */,
 				370B215F64939D0209B25DF3 /* IntervalView.swift */,
+				6C76CF2423383181C70D93D6 /* Keychain.swift */,
+				E5A8091EEE55013E553A518A /* LibraryView.swift */,
 				F7914B3F9D00CC40B977FB5F /* PitchEngine.swift */,
 				BA12FA01879EB7118DCA1A93 /* RangeFinderModel.swift */,
 				B8C70934EB10F1972898F0D9 /* RangeFinderView.swift */,
 				B09C67A07F93A54F39B1B767 /* RecallModel.swift */,
 				9342F7162A75633C3D207CF1 /* RecallView.swift */,
+				F254EB618FA46D39546DBCE4 /* Secrets.swift */,
+				BCFFC18F6444E41CC9B0998F /* SongModel.swift */,
+				F9CAB623015C78132D0F22E7 /* SongPracticeView.swift */,
 				2F7E6CCD1B31618C1B1B69E9 /* TonePlayer.swift */,
+				EFF0EFA676267FAD2F29092A /* TrackLibrary.swift */,
+				8FC6A90917DCDF1672CAFAB3 /* TrackModels.swift */,
 				70665102539D1C1019AC353D /* YIN.swift */,
 			);
 			path = Held;
@@ -152,12 +173,19 @@
 				7B08CB4DD57D8B753DDA2E25 /* HeldApp.swift in Sources */,
 				9713D911B6C5977D2967586C /* IntervalModel.swift in Sources */,
 				B6B9B124AA0C76D001A30530 /* IntervalView.swift in Sources */,
+				EA630700A36F7BAA75A835E3 /* Keychain.swift in Sources */,
+				038A6257F9F828F27AB9FC51 /* LibraryView.swift in Sources */,
 				819855E0F015458DE5B9C7EB /* PitchEngine.swift in Sources */,
 				4218216A06C204B85F3EC1D5 /* RangeFinderModel.swift in Sources */,
 				F65DAA54E23618D12F49EE78 /* RangeFinderView.swift in Sources */,
 				54400838F22573740BBCB0BB /* RecallModel.swift in Sources */,
 				4FE033B3F09CA38C6BCAE9A9 /* RecallView.swift in Sources */,
+				C51F68C753865FFE1AE7879F /* Secrets.swift in Sources */,
+				E651A1A62A87FA2DFD7FC12E /* SongModel.swift in Sources */,
+				D577D521FE3E7B33ACC3D866 /* SongPracticeView.swift in Sources */,
 				1BC15C91A1C2E00218969B60 /* TonePlayer.swift in Sources */,
+				2E4D6610280C0809FFBD35B4 /* TrackLibrary.swift in Sources */,
+				5214047A20B5CC89A141C520 /* TrackModels.swift in Sources */,
 				7CAD846F0BEAF22EB20CC98D /* YIN.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

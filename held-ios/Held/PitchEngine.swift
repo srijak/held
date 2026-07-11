@@ -3,6 +3,8 @@ import AVFoundation
 import Combine
 import UIKit
 
+private let heldNoteNames = ["C", "C♯", "D", "D♯", "E", "F", "F♯", "G", "G♯", "A", "A♯", "B"]
+
 @MainActor
 final class PitchEngine: ObservableObject {
 
@@ -35,19 +37,19 @@ final class PitchEngine: ObservableObject {
     private var recentMidi: [Double] = []
     private var holdStart: TimeInterval?
 
-    // MARK: - Music math
-    static func midiToFreq(_ m: Double) -> Double { 440 * pow(2, (m - 69) / 12) }
-    static func freqToMidiFloat(_ f: Double) -> Double { 69 + 12 * log2(f / 440) }
-    static let noteNames = ["C", "C♯", "D", "D♯", "E", "F", "F♯", "G", "G♯", "A", "A♯", "B"]
-    static func noteName(_ midi: Int) -> String {
-        let name = noteNames[((midi % 12) + 12) % 12]
+    // MARK: - Music math (pure functions — usable from any context)
+    nonisolated static func midiToFreq(_ m: Double) -> Double { 440 * pow(2, (m - 69) / 12) }
+    nonisolated static func freqToMidiFloat(_ f: Double) -> Double { 69 + 12 * log2(f / 440) }
+    nonisolated static var noteNames: [String] { heldNoteNames }
+    nonisolated static func noteName(_ midi: Int) -> String {
+        let name = heldNoteNames[((midi % 12) + 12) % 12]
         let octave = midi / 12 - 1
         return "\(name)\(octave)"
     }
-    static func noteLetter(_ midi: Int) -> String {
-        noteNames[((midi % 12) + 12) % 12]
+    nonisolated static func noteLetter(_ midi: Int) -> String {
+        heldNoteNames[((midi % 12) + 12) % 12]
     }
-    static func noteOctave(_ midi: Int) -> Int { midi / 12 - 1 }
+    nonisolated static func noteOctave(_ midi: Int) -> Int { midi / 12 - 1 }
 
     // MARK: - Lifecycle
     func start() async {

@@ -15,6 +15,8 @@ struct HeldApp: App {
                     .tabItem { Label("Ear", systemImage: "ear") }
                 IntervalView(engine: engine)
                     .tabItem { Label("Intervals", systemImage: "arrow.up.arrow.down") }
+                LibraryView(engine: engine)
+                    .tabItem { Label("Songs", systemImage: "music.note.list") }
             }
             .tint(Color.heldBrass)
         }

@@ -120,3 +120,38 @@ stays inside your saved recall range. "Play the target" after each
 attempt closes the feedback loop.
 
 Unlock progress persists. Hear/Sing accuracy are session stats.
+
+## Songs tab (melody library)
+
+Fifth tab. Downloads melody tracks from a public GitHub repo
+(`held-tracks`) and practices them chunk by chunk.
+
+- **Repo row**: tap the `owner/held-tracks` text to edit. **Token
+  row**: paste a fine-grained PAT (Contents: read-only, single repo)
+  for private repos — stored in Keychain. Fetches go through the
+  GitHub contents API; offline after download.
+- **Practice**: call-and-response per ~9s chunk. **Listen** plays the
+  chunk as synth tones; **Sing** gives a 1.2s count-in, then scrolls
+  the cursor silently while the mic scores you (the reference never
+  plays while you sing — same reasoning as Recall). Per-note bars go
+  green (≥60% of frames within ±50¢) or red; chunk score = notes
+  passed. Best score per chunk persists.
+- **Transpose** (±ST) shifts the whole track; persisted per track.
+- **Loop** re-runs Sing on the same chunk after showing the score.
+
+Publish flow from the Mac:
+
+```
+python3 extract_melody.py song.mp3
+python3 publish_track.py song.notes.json --title "Song Title"
+```
+
+(`publish_track.py` lives in the held-tracks repo.)
+
+## Secrets.swift (build-time token)
+
+`Held/Secrets.swift` is gitignored. Fill in `githubToken` (and
+`defaultRepo`) locally and every build you make — including installs
+onto a second device — ships with the token baked in; no Songs-tab
+entry needed. The in-app token field still overrides it if set.
+Blank the file before zipping source for a handoff.
