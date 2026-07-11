@@ -87,3 +87,36 @@ The suggested training range trims 2 semitones off each end — trials
 at your edges measure strain, not pitch memory. One tap applies it to
 Recall. Redo it warmed up vs cold and you'll see why morning numbers
 shouldn't set your range.
+
+## Ear mode (pitch discrimination)
+
+Third tab. No mic needed — playback only. Two tones play; answer
+whether the second was HIGHER or LOWER. The gap shrinks on a ladder:
+600¢ → 300¢ → 100¢ → 50¢ → 25¢ → 12¢. Four of the last five correct
+promotes you a level; two consecutive misses demotes.
+
+The threshold stat is the smallest gap you've answered at ≥75%
+accuracy over ≥8 lifetime trials. The clinical line for congenital
+amusia ("tone deafness") is failing at one semitone (100¢). Clearing
+100¢ rules it out; most untrained listeners settle at 25–50¢. Replay
+is allowed while answering — this is untimed perception, not memory.
+
+Level, best, and per-level tallies persist across sessions.
+
+## Intervals mode (ear TRAINING, not testing)
+
+Fourth tab, two drills behind a segmented toggle:
+
+**Hear** — root + second note play; name the interval from the unlocked
+set. Starts with Unison / P5 / Octave (maximally distinct); 10 of the
+last 12 correct unlocks the next interval in distinctiveness order,
+through to the tritone. Song mnemonics behind the "hint" button
+(P5 = Twinkle Twinkle, P8 = Over the Rainbow, m2 = Jaws…).
+
+**Sing** — root plays, prompt says e.g. "Perfect 5th ↑", produce it.
+Stable-hold capture (±0.5 semitone for 1s), scored against the target
+with a training-grade ±50¢ hit band. Roots are sampled so the target
+stays inside your saved recall range. "Play the target" after each
+attempt closes the feedback loop.
+
+Unlock progress persists. Hear/Sing accuracy are session stats.

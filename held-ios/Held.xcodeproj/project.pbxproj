@@ -7,19 +7,28 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		1BC15C91A1C2E00218969B60 /* TonePlayer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2F7E6CCD1B31618C1B1B69E9 /* TonePlayer.swift */; };
 		4218216A06C204B85F3EC1D5 /* RangeFinderModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = BA12FA01879EB7118DCA1A93 /* RangeFinderModel.swift */; };
+		49E2BA3C363277ED4CB0315C /* EarModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 23F065C0D65A64A487B741C5 /* EarModel.swift */; };
 		4FE033B3F09CA38C6BCAE9A9 /* RecallView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9342F7162A75633C3D207CF1 /* RecallView.swift */; };
 		54400838F22573740BBCB0BB /* RecallModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = B09C67A07F93A54F39B1B767 /* RecallModel.swift */; };
 		7B08CB4DD57D8B753DDA2E25 /* HeldApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 25E08C8DA2F0857061969F16 /* HeldApp.swift */; };
 		7CAD846F0BEAF22EB20CC98D /* YIN.swift in Sources */ = {isa = PBXBuildFile; fileRef = 70665102539D1C1019AC353D /* YIN.swift */; };
 		819855E0F015458DE5B9C7EB /* PitchEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = F7914B3F9D00CC40B977FB5F /* PitchEngine.swift */; };
+		9713D911B6C5977D2967586C /* IntervalModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = CF29D46DA940091CB78D046C /* IntervalModel.swift */; };
 		A467EC62AACCB20A6B5B850E /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D5C1F8A06C2F3A57793AE7A5 /* ContentView.swift */; };
+		B332150171251C9B7B1E308A /* EarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A6C891FAF559CEBEA702C64 /* EarView.swift */; };
+		B6B9B124AA0C76D001A30530 /* IntervalView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 370B215F64939D0209B25DF3 /* IntervalView.swift */; };
 		F0F06E9A2D1CB63DA9662C96 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = EE3D50E6DAD917221931BCC7 /* Assets.xcassets */; };
 		F65DAA54E23618D12F49EE78 /* RangeFinderView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B8C70934EB10F1972898F0D9 /* RangeFinderView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		1A6C891FAF559CEBEA702C64 /* EarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EarView.swift; sourceTree = "<group>"; };
+		23F065C0D65A64A487B741C5 /* EarModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EarModel.swift; sourceTree = "<group>"; };
 		25E08C8DA2F0857061969F16 /* HeldApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HeldApp.swift; sourceTree = "<group>"; };
+		2F7E6CCD1B31618C1B1B69E9 /* TonePlayer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TonePlayer.swift; sourceTree = "<group>"; };
+		370B215F64939D0209B25DF3 /* IntervalView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IntervalView.swift; sourceTree = "<group>"; };
 		6F240256A9CF8B9F8B87588A /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		70665102539D1C1019AC353D /* YIN.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = YIN.swift; sourceTree = "<group>"; };
 		9342F7162A75633C3D207CF1 /* RecallView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecallView.swift; sourceTree = "<group>"; };
@@ -27,6 +36,7 @@
 		B09C67A07F93A54F39B1B767 /* RecallModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecallModel.swift; sourceTree = "<group>"; };
 		B8C70934EB10F1972898F0D9 /* RangeFinderView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RangeFinderView.swift; sourceTree = "<group>"; };
 		BA12FA01879EB7118DCA1A93 /* RangeFinderModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RangeFinderModel.swift; sourceTree = "<group>"; };
+		CF29D46DA940091CB78D046C /* IntervalModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IntervalModel.swift; sourceTree = "<group>"; };
 		D5C1F8A06C2F3A57793AE7A5 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		EE3D50E6DAD917221931BCC7 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		F7914B3F9D00CC40B977FB5F /* PitchEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PitchEngine.swift; sourceTree = "<group>"; };
@@ -38,13 +48,18 @@
 			children = (
 				EE3D50E6DAD917221931BCC7 /* Assets.xcassets */,
 				D5C1F8A06C2F3A57793AE7A5 /* ContentView.swift */,
+				23F065C0D65A64A487B741C5 /* EarModel.swift */,
+				1A6C891FAF559CEBEA702C64 /* EarView.swift */,
 				25E08C8DA2F0857061969F16 /* HeldApp.swift */,
 				6F240256A9CF8B9F8B87588A /* Info.plist */,
+				CF29D46DA940091CB78D046C /* IntervalModel.swift */,
+				370B215F64939D0209B25DF3 /* IntervalView.swift */,
 				F7914B3F9D00CC40B977FB5F /* PitchEngine.swift */,
 				BA12FA01879EB7118DCA1A93 /* RangeFinderModel.swift */,
 				B8C70934EB10F1972898F0D9 /* RangeFinderView.swift */,
 				B09C67A07F93A54F39B1B767 /* RecallModel.swift */,
 				9342F7162A75633C3D207CF1 /* RecallView.swift */,
+				2F7E6CCD1B31618C1B1B69E9 /* TonePlayer.swift */,
 				70665102539D1C1019AC353D /* YIN.swift */,
 			);
 			path = Held;
@@ -132,12 +147,17 @@
 			buildActionMask = 2147483647;
 			files = (
 				A467EC62AACCB20A6B5B850E /* ContentView.swift in Sources */,
+				49E2BA3C363277ED4CB0315C /* EarModel.swift in Sources */,
+				B332150171251C9B7B1E308A /* EarView.swift in Sources */,
 				7B08CB4DD57D8B753DDA2E25 /* HeldApp.swift in Sources */,
+				9713D911B6C5977D2967586C /* IntervalModel.swift in Sources */,
+				B6B9B124AA0C76D001A30530 /* IntervalView.swift in Sources */,
 				819855E0F015458DE5B9C7EB /* PitchEngine.swift in Sources */,
 				4218216A06C204B85F3EC1D5 /* RangeFinderModel.swift in Sources */,
 				F65DAA54E23618D12F49EE78 /* RangeFinderView.swift in Sources */,
 				54400838F22573740BBCB0BB /* RecallModel.swift in Sources */,
 				4FE033B3F09CA38C6BCAE9A9 /* RecallView.swift in Sources */,
+				1BC15C91A1C2E00218969B60 /* TonePlayer.swift in Sources */,
 				7CAD846F0BEAF22EB20CC98D /* YIN.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

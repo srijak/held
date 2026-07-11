@@ -11,6 +11,10 @@ struct HeldApp: App {
                     .tabItem { Label("Tune", systemImage: "tuningfork") }
                 RecallView(engine: engine)
                     .tabItem { Label("Recall", systemImage: "brain") }
+                EarView()
+                    .tabItem { Label("Ear", systemImage: "ear") }
+                IntervalView(engine: engine)
+                    .tabItem { Label("Intervals", systemImage: "arrow.up.arrow.down") }
             }
             .tint(Color.heldBrass)
         }
