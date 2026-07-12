@@ -338,46 +338,6 @@ def viterbi_notes(
     return out
 
 
-def refine_boundaries(notes, times: np.ndarray, midi: np.ndarray,
-                      window_s: float = 0.12, min_keep: float = 0.06):
-    """Viterbi switches states only after accumulated evidence beats the
-    switch cost, so boundaries land systematically LATE (~25-50ms)
-    relative to where the voice starts moving. Snap each contiguous
-    boundary to where the raw pitch actually crosses the midpoint
-    between the two notes — verified on synthetic glides to recover
-    true boundaries within one frame."""
-    if len(times) < 2 or len(notes) < 2:
-        return notes
-    hop = float(times[1] - times[0])
-    w = max(1, int(window_s / hop))
-    for a, b in zip(notes, notes[1:]):
-        if b["start"] - a["end"] > hop * 1.5:   # real gap: leave it
-            continue
-        if a["midi"] == b["midi"]:
-            continue
-        bidx = int(round((b["start"] - times[0]) / hop))
-        lo, hi = max(0, bidx - w), min(len(midi) - 2, bidx + w)
-        midpoint = (a["midi_float"] + b["midi_float"]) / 2
-        rising = b["midi_float"] > a["midi_float"]
-        crossings = []
-        for k in range(lo, hi + 1):
-            x0, x1 = midi[k], midi[k + 1]
-            if np.isnan(x0) or np.isnan(x1):
-                continue
-            if (rising and x0 < midpoint <= x1) or \
-               (not rising and x0 > midpoint >= x1):
-                crossings.append(k + 1)
-        if not crossings:
-            continue
-        cross = min(crossings, key=lambda k: abs(k - bidx))
-        tb = float(times[cross])
-        if tb - a["start"] < min_keep or b["end"] - tb < min_keep:
-            continue
-        a["end"] = round(tb, 3)
-        b["start"] = round(tb, 3)
-    return notes
-
-
 def extend_notes_by_activity(
     notes,
     times: np.ndarray,
@@ -601,12 +561,10 @@ def main():
 
     # confidence gate, then smooth, then bridge
     midi[conf < args.min_confidence] = np.nan
-    midi = median_smooth(midi, k=3)
+    midi = median_smooth(midi, k=5)
     midi = bridge_gaps(midi, times)
 
-    notes = viterbi_notes(midi, times)
-    notes = refine_boundaries(notes, times, midi)
-    notes = extend_notes_by_activity(notes, times, rms)
+    notes = extend_notes_by_activity(viterbi_notes(midi, times), times, rms)
     coverage_report(notes, times, rms)
 
     print("[3/3] writing JSON")
