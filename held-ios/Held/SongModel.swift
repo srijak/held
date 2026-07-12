@@ -77,7 +77,17 @@ final class SongModel: ObservableObject {
     /// Bluetooth, and without this the visuals lead the voice.
     @Published private(set) var displayLatency: Double = 0
     @Published var source: Source {
-        didSet { UserDefaults.standard.set(source.rawValue, forKey: "song.source") }
+        didSet {
+            UserDefaults.standard.set(source.rawValue, forKey: "song.source")
+            guard oldValue != source else { return }
+            // hot-swap: a source change mid-playback restarts the
+            // current mode with the new source
+            if phase == .listening {
+                listen()
+            } else if phase == .singing || phase == .leadIn {
+                sing(along: singingAlong)
+            }
+        }
     }
     @Published var sungSamples: [SungSample] = []
     @Published var results: [Double: NoteResult] = [:]   // keyed by note.start
@@ -95,7 +105,10 @@ final class SongModel: ObservableObject {
 
     // MARK: - Constants
     static let hitBandCents: Double = 50
-    static let legatoMaxGap: Double = 2.0
+    /// Word-internal gaps (consonants) are sung through; real breaths
+    /// are not — the vocal goes silent, so the synth should too.
+    /// Matches the breath threshold that defines phrases.
+    static let legatoMaxGap: Double = 0.4
     static let leadInSeconds: Double = 1.2
     private static let breathGapSeconds: Double = 0.35
     private static let targetChunkSeconds: Double = 10.0
@@ -109,6 +122,12 @@ final class SongModel: ObservableObject {
     private let backingPlayerNode = AVAudioPlayerNode()
     private var configuredNodes = Set<ObjectIdentifier>()
     private var synthTask: Task<Void, Never>?
+    /// When set, the display clock derives from this node's actual
+    /// render position (sample-accurate) instead of wall time — engine
+    /// spin-up and scheduling latency otherwise make visuals lead the
+    /// audio by up to ~1s on first play.
+    private var clockNode: AVAudioPlayerNode?
+    private var clockNodeOffset: Double = 0
     private let vocalFile: AVAudioFile?
     private let backingFile: AVAudioFile?
     var hasAudio: Bool { vocalFile != nil || backingFile != nil }
@@ -278,6 +297,8 @@ final class SongModel: ObservableObject {
         let files = playbackFiles()
         if files.isEmpty {
             guard startSynthPlayback(at: nil) else { return }
+            clockNode = playerNode
+            clockNodeOffset = 0
             displayLatency = AVAudioSession.sharedInstance().outputLatency
             phase = .listening
             startClock(offset: 0, total: spanEnd - spanStart) { [weak self] in
@@ -291,6 +312,8 @@ final class SongModel: ObservableObject {
         let when = AVAudioTime(
             hostTime: mach_absolute_time() + AVAudioTime.hostTime(forSeconds: 0.08))
         guard scheduleFiles(files, preRoll: preRoll, at: when) else { return }
+        clockNode = files.first?.0
+        clockNodeOffset = -preRoll
         displayLatency = AVAudioSession.sharedInstance().outputLatency
         phase = .listening
         startClock(offset: -preRoll, total: spanEnd - spanStart) { [weak self] in
@@ -366,7 +389,17 @@ final class SongModel: ObservableObject {
         let sr = playEngine.mainMixerNode.outputFormat(forBus: 0).sampleRate
         guard let fmt = AVAudioFormat(standardFormatWithSampleRate: sr, channels: 1)
         else { return false }
-        let synth = LegatoSynth(segs: segs, sr: sr, startTime: spanStart)
+        var envT: [Double] = []
+        var envV: [Double] = []
+        if let f = track.frames, let rms = f.rms {
+            for (i, tt) in f.t.enumerated()
+            where tt >= spanStart - 0.1 && tt <= spanEnd + 0.3 && i < rms.count {
+                envT.append(tt)
+                envV.append(0.25 + 0.75 * pow(max(0, min(1, rms[i])), 0.7))
+            }
+        }
+        let synth = LegatoSynth(segs: segs, sr: sr, startTime: spanStart,
+                                envT: envT, envV: envV)
         var remaining = Int(((spanEnd - spanStart) + 0.3) * sr)
         let blockFrames = Int(4.0 * sr)
 
@@ -526,7 +559,10 @@ final class SongModel: ObservableObject {
                 + AVAudioTime.hostTime(forSeconds: Self.leadInSeconds))
         let files = playbackFiles()
         if files.isEmpty {
-            _ = startSynthPlayback(at: when)
+            if startSynthPlayback(at: when) {
+                clockNode = playerNode
+                clockNodeOffset = -Self.leadInSeconds
+            }
         } else {
             // run-in plays during the count-in: audio position spanStart
             // still lands exactly at clock zero
@@ -534,7 +570,10 @@ final class SongModel: ObservableObject {
             let runIn = AVAudioTime(
                 hostTime: mach_absolute_time()
                     + AVAudioTime.hostTime(forSeconds: Self.leadInSeconds - preRoll))
-            scheduleFiles(files, preRoll: preRoll, at: runIn)
+            if scheduleFiles(files, preRoll: preRoll, at: runIn) {
+                clockNode = files.first?.0
+                clockNodeOffset = -preRoll
+            }
         }
     }
 
@@ -606,7 +645,13 @@ final class SongModel: ObservableObject {
         displayTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 30.0, repeats: true) { [weak self] timer in
             Task { @MainActor in
                 guard let self else { timer.invalidate(); return }
-                let t = ProcessInfo.processInfo.systemUptime - self.clockStart
+                var t = ProcessInfo.processInfo.systemUptime - self.clockStart
+                if let node = self.clockNode, node.isPlaying,
+                   let nt = node.lastRenderTime, nt.isSampleTimeValid,
+                   let pt = node.playerTime(forNodeTime: nt), pt.isSampleTimeValid,
+                   pt.sampleTime >= 0 {
+                    t = Double(pt.sampleTime) / pt.sampleRate + self.clockNodeOffset
+                }
                 self.cursor = t
                 if self.phase == .leadIn && t >= 0 { self.phase = .singing }
                 self.onTick(t)
@@ -642,6 +687,7 @@ final class SongModel: ObservableObject {
         pitchSub = nil
         synthTask?.cancel()
         synthTask = nil
+        clockNode = nil
         playerNode.stop()
         filePlayerNode.stop()
         backingPlayerNode.stop()
@@ -673,12 +719,31 @@ private final class LegatoSynth: @unchecked Sendable {
     private var gains = [Double](repeating: 0, count: SongModel.harmonicCount)
     private var gainF0 = -1.0
     private let ampSlew: Double
+    private let envT: [Double]
+    private let envV: [Double]
+    private var envIdx = 0
 
-    init(segs: [Seg], sr: Double, startTime: Double) {
+    init(segs: [Seg], sr: Double, startTime: Double,
+         envT: [Double] = [], envV: [Double] = []) {
         self.segs = segs
         self.sr = sr
         self.t = startTime
         self.ampSlew = 1 - exp(-1.0 / (sr * 0.012))
+        self.envT = envT
+        self.envV = envV
+    }
+
+    /// Singer's loudness contour (shaped RMS); 1.0 when absent.
+    private func envelope(at t: Double) -> Double {
+        guard !envT.isEmpty else { return 1 }
+        while envIdx + 1 < envT.count, envT[envIdx + 1] < t { envIdx += 1 }
+        if envIdx + 1 < envT.count, t >= envT[envIdx] {
+            let a = envT[envIdx]
+            let b = envT[envIdx + 1]
+            let frac = (t - a) / max(1e-6, b - a)
+            return envV[envIdx] + (envV[envIdx + 1] - envV[envIdx]) * frac
+        }
+        return envV[min(envIdx, envV.count - 1)]
     }
 
     func render(into data: UnsafeMutablePointer<Float>, frames: Int) {
@@ -689,6 +754,14 @@ private final class LegatoSynth: @unchecked Sendable {
             var target: Double?
             if idx < segs.count, t >= segs[idx].start, t < segs[idx].end {
                 target = segs[idx].midi
+                // glide look-ahead: a voice starts moving BEFORE the
+                // boundary — begin the exponential toward the next note
+                // ~40ms early across contiguous boundaries
+                if idx + 1 < segs.count,
+                   segs[idx + 1].start - t < 0.04,
+                   segs[idx + 1].start - segs[idx].end < 0.02 {
+                    target = segs[idx + 1].midi
+                }
             }
             var inc = 0.0
             if let m = target {
@@ -710,7 +783,7 @@ private final class LegatoSynth: @unchecked Sendable {
             } else {
                 haveVoice = false
             }
-            let ampTarget: Double = target != nil ? 1.0 : 0.0
+            let ampTarget: Double = target != nil ? envelope(at: t) : 0.0
             for i in 0..<block {
                 amp += (ampTarget - amp) * ampSlew
                 if inc > 0 { phase += inc }

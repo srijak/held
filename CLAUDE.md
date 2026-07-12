@@ -18,9 +18,24 @@ Three components:
    (`srijak/held-tracks`, default branch **master**, not main — this
    has bitten us). Static track catalog: `index.json` + `tracks/*.json`
    + `tracks/*.m4a`. `publish_track.py` lives there.
-3. **extract_melody.py** — Mac-side pipeline (lives in `~/c/held`):
-   song audio → Demucs stem separation → pYIN → Viterbi note decoding →
-   notes JSON + vocal/backing AAC clips.
+3. **Mac-side scripts** (live in `~/c/held`):
+   - `extract_melody.py` — song audio → Demucs stem separation → pYIN →
+     Viterbi note decoding → notes JSON + vocal/backing AAC clips.
+   - `batch_extract.py` — runs the pipeline over a directory of MP3s;
+     resumable (skips existing .notes.json), titles from ID3 tags via
+     mutagen (falls back to "Artist - Title.mp3" parsing), publishes
+     each with --no-push and pushes once at the end.
+   - `verify_track.py` — objective fidelity harness. Point it at a
+     single json+m4a pair or the whole tracks/ directory. Decodes the
+     clip, re-runs pYIN, cross-correlates voicing to detect global
+     offsets (catches json/audio from different runs), and scores every
+     note with the app's own metric. The pass%% it reports is the
+     ceiling a perfect singer could score. This replaced eyeballing as
+     the acceptance gate. KNOWN METRIC FLAW: onset-p90 matches voicing
+     onsets, but legato singing is continuously voiced, so mid-phrase
+     notes pair with distant phrase starts and the column clusters
+     meaninglessly near the 400ms cap — trust offset and pass%%, not
+     onset-p90, until a boundary-based metric replaces it.
 
 ## Data flow
 
@@ -35,8 +50,18 @@ song.mp3 (or --record via BlackHole)
       viterbi_notes()  ← THE segmenter. Semitone states, deadband 0.25,
         switch_cost 3.0, dist_cost 0.05, min note 0.10s absorbed into
         neighbors. Greedy segmentation was replaced; do not regress.
-      extend_notes_by_activity()  → vstart/vend from RMS voice activity
-        (threshold 0.06, max 0.45s, tolerates 3-frame dropouts)
+      extend_notes_by_activity()  → vstart/vend (word spans). A frame
+        counts as "voice is here" if EITHER stem RMS exceeds an
+        ADAPTIVE threshold (noise floor measured from frames away from
+        any note × 1.6 — crowd noise on live recordings lands in the
+        vocal stem because it IS voices, and raised the floor
+        everywhere) OR raw pre-confidence-gate pYIN pitch sits within
+        3 st of the note with local consistency (real scoops are
+        smooth, crowd pitch is jitter). That second signal is onset
+        reclamation: word onsets are pitched-but-uncertain and the
+        confidence gate was deleting them. Walk: max 0.6s, tolerates
+        4-frame dropouts. Live recordings remain adversarial — the
+        answer is studio MP3s; this is graceful degradation.
       coverage_report()  → prints % of audible vocal covered by notes +
         largest uncovered spans (diagnostic; user watches this)
       encode vocal clip  (mono, 64k AAC, peak-normalized 0.9)
@@ -101,26 +126,45 @@ note_count, midi_lo, midi_hi, difficulty, audio?, backing?}]}`.
   - **Modes**: Listen (playback only), Along (playback + mic scoring,
     headphones feature — speaker bleeds into detector; count-in gets up
     to 1s of audio run-in), Sing (silent, from memory).
+  - **Clock**: during any playback the cursor derives from the player
+    node's ACTUAL render position (`playerTime(forNodeTime:)` via
+    `clockNode`/`clockNodeOffset`), not wall time — engine spin-up +
+    session activation made visuals lead audio by up to ~1s on first
+    play (user-confirmed fix). Wall clock is the fallback for silent
+    Sing and count-ins (the two clocks agree by construction at the
+    handoff).
   - **Latency**: `latencyOffset` (= session output+input latency,
     Along only) shifts sung sample timestamps; `displayLatency`
     (= output latency, any playback) lags the drawn cursor so visuals
     match the HEARD audio. Both matter on Bluetooth (~100-200ms).
-    A manual ±ms sync trim was discussed as the next step if the
-    session's latency estimate proves off — not yet built.
+    A manual ±ms sync trim remains the next step if residual offset
+    bothers on Bluetooth — not yet built.
+  - **Controls**: the active mode's button is a red Stop (Listen/
+    Along/Sing each toggle themselves); cross-pressing switches modes
+    directly; changing the source mid-playback hot-restarts the
+    current mode with the new source (restarting an Along run resets
+    its in-flight score — intentional).
   - **Scoring**: per note, window [start+0.08, end], hit = within
     ±50 cents, pass = hitRatio ≥ 0.6 where expected sample cadence is
     assumed ~0.09s (UNTESTED against real device tap rate — if traces
     look right but scores read low, tune this constant). Notes score
     LIVE as the cursor passes them (`onTick`). Per-phrase bests persist
     (`song.scores.<trackID>`).
-  - **Synth** (`fillLegatoNotes`): clean-reference tone. Notes hold
-    their pitch, extend to next onset (gap ≤ 2s), ~30ms exponential
-    pitch smoother = natural portamento, onset scoop from -0.8 st after
-    silence, delayed vibrato (±7¢ @5.3Hz after 0.25s), formant-shaped
-    8-harmonic stack ("ah" vowel bumps at 730/1090/2450 Hz — also
-    pushes energy where phone speakers work). Frame-following synthesis
-    was removed deliberately: the vocal clip owns realism, the synth
-    owns "the target."
+  - **Synth** (`LegatoSynth`, streamed in ~4s blocks off-main — a
+    full-song monolithic render froze the UI): clean-reference tone.
+    Notes hold their pitch, extend to next onset for gaps ≤ 0.4s
+    (breath-aligned; consonant gaps sung through, real silences
+    silent), ~30ms exponential smoother + 40ms glide look-ahead so
+    transitions center where the voice's do, onset scoop -0.8 st,
+    delayed vibrato (±7¢ @5.3Hz), formant-shaped 8-harmonic stack
+    (730/1090/2450 Hz), amplitude follows the singer's shaped RMS
+    envelope (frames.rms). Frame-following synthesis was removed
+    deliberately: the vocal clip owns realism, the synth owns "the
+    target." Extractor-side alignment: median k=3 and a
+    refine_boundaries() pass that snaps Viterbi's systematically-late
+    (~25-50ms) boundaries onto the raw pitch's midpoint crossing.
+    Pipeline verified by verify_track.py at 90-100%% pass ceilings and
+    ~0 offset across the whole library (July 2026).
 - **SongPracticeView / PianoRoll** — Canvas. Scrolling mode (Listen/
   Sing/Along): fixed now-line at 0.375 width, 4s window, notes flow
   toward it; brass line = listening, green = singing. Static full-
@@ -153,23 +197,39 @@ note_count, midi_lo, midi_hi, difficulty, audio?, backing?}]}`.
   new pure helpers on @MainActor types should be `nonisolated`.
 
 ## Open threads / known rough edges (priority order)
-1. Coverage-report results from the user's next extraction decide the
-   next pipeline fix (gate too high vs unscoreable delivery vs stem
-   bleed). Pending user data.
-2. Scoring cadence constant (0.09s) and the ±50¢/60% thresholds are
-   uncalibrated against hardware.
+1. verify_track.py onset-p90 metric is broken for legato content (see
+   above) — replace with a note-boundary-based timing metric if timing
+   fidelity needs measuring again.
+2. Scoring cadence constant (0.09s) and the ±50¢/60%% thresholds are
+   uncalibrated against hardware. verify_track.py pass%% gives the
+   per-track ceiling; user scores meaningfully below ceiling on notes
+   the trace visibly hits = tune the cadence constant.
 3. Manual audio/visual sync trim (±ms, per headphone) if Bluetooth
-   latency compensation proves inexact.
+   residue bothers after the audio-position clock fix.
 4. Clip download failures are silent (best-effort) — surface in
    `lastError`.
 5. PAT expires ≤1 year from ~July 2026 → silent 401s. Calendar'd.
-6. iOS 17 `onChange(of:)` single-param deprecation warnings; Timer
+6. Repo/library hygiene: iteration left multiple versions of songs in
+   held-tracks (free-falling, free-falling-2…). Useful as a pipeline
+   regression set, but near-duplicate titles can collide in one quiz
+   round — prune before serious quiz use (`publish_track.py
+   --reindex` after deleting, then delete + re-download in app;
+   refresh alone NEVER re-fetches files — recurring trap).
+7. Live recordings: crowd noise lands in the vocal stem (it is
+   voices). Adaptive floor + consistency checks make it degrade
+   gracefully; the actual answer is "use studio MP3s" (user agreed).
+8. iOS 17 `onChange(of:)` single-param deprecation warnings; Timer
    @Sendable capture warnings. Cosmetic.
-7. Ideas parked: duel/profiles layer for the drill tabs (quiz already
+9. Ideas parked: duel/profiles layer for the drill tabs (quiz already
    has multiplayer), cents-offset sharp/flat diagnosis in review,
-   Spotify playlist quiz (rejected for now — OAuth+Premium+SDK not
-   worth it vs growing the library), quiz "band from vocal-entry
-   window" variant.
+   Spotify playlist quiz (rejected — OAuth+Premium+SDK not worth it vs
+   growing the library), quiz "band from vocal-entry window" variant.
+
+## Status (end of chat handoff, July 2026)
+v37. User testing next (kids are the QA team). Pipeline instrumented
+and verified; app practice loop + 3-mode multiplayer quiz complete.
+Feed the library via batch_extract.py with clean studio MP3s; gate
+with verify_track.py; prune old versions.
 
 ## Working with Srijak
 Direct, operational, no cushioning. Investigate before recommending

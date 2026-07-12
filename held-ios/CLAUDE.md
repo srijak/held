@@ -113,14 +113,19 @@ note_count, midi_lo, midi_hi, difficulty, audio?, backing?}]}`.
     look right but scores read low, tune this constant). Notes score
     LIVE as the cursor passes them (`onTick`). Per-phrase bests persist
     (`song.scores.<trackID>`).
-  - **Synth** (`fillLegatoNotes`): clean-reference tone. Notes hold
-    their pitch, extend to next onset (gap ≤ 2s), ~30ms exponential
-    pitch smoother = natural portamento, onset scoop from -0.8 st after
-    silence, delayed vibrato (±7¢ @5.3Hz after 0.25s), formant-shaped
-    8-harmonic stack ("ah" vowel bumps at 730/1090/2450 Hz — also
-    pushes energy where phone speakers work). Frame-following synthesis
-    was removed deliberately: the vocal clip owns realism, the synth
-    owns "the target."
+  - **Synth** (`LegatoSynth`, streamed in ~4s blocks off-main — a
+    full-song monolithic render froze the UI): clean-reference tone.
+    Notes hold their pitch, extend to next onset for gaps ≤ 0.4s
+    (breath-aligned; consonant gaps sung through, real silences
+    silent), ~30ms exponential smoother + 40ms glide look-ahead so
+    transitions center where the voice's do, onset scoop -0.8 st,
+    delayed vibrato (±7¢ @5.3Hz), formant-shaped 8-harmonic stack
+    (730/1090/2450 Hz), amplitude follows the singer's shaped RMS
+    envelope (frames.rms). Frame-following synthesis was removed
+    deliberately: the vocal clip owns realism, the synth owns "the
+    target." Extractor-side alignment: median k=3 and a
+    refine_boundaries() pass that snaps Viterbi's systematically-late
+    (~25-50ms) boundaries onto the raw pitch's midpoint crossing.
 - **SongPracticeView / PianoRoll** — Canvas. Scrolling mode (Listen/
   Sing/Along): fixed now-line at 0.375 width, 4s window, notes flow
   toward it; brass line = listening, green = singing. Static full-

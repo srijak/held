@@ -137,43 +137,46 @@ struct SongPracticeView: View {
 
     private var controlRow: some View {
         HStack(spacing: 8) {
-            Button { model.listen() } label: {
-                Label("Listen", systemImage: "speaker.wave.2")
+            Button {
+                if model.phase == .listening { model.stopAll() } else { model.listen() }
+            } label: {
+                Text(model.phase == .listening ? "Stop" : "Listen")
                     .font(.system(size: 12, weight: .semibold, design: .monospaced))
-                    .labelStyle(.titleOnly)
                     .frame(maxWidth: .infinity).padding(.vertical, 13)
                     .contentShape(Rectangle())
             }
-            .foregroundStyle(Color.heldText)
-            .background(Color.heldPanel)
-            .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.heldLine, lineWidth: 1))
+            .foregroundStyle(model.phase == .listening ? Color.heldBg : Color.heldText)
+            .background(model.phase == .listening ? Color.heldRed : Color.heldPanel)
+            .overlay(RoundedRectangle(cornerRadius: 10)
+                .stroke(model.phase == .listening ? Color.heldRed : Color.heldLine, lineWidth: 1))
             .clipShape(RoundedRectangle(cornerRadius: 10))
 
             Button {
-                if singActive { model.stopAll() } else { model.sing(along: true) }
+                if alongActive { model.stopAll() } else { model.sing(along: true) }
             } label: {
-                Text(singActive && model.singingAlong ? "…" : "Along")
+                Text(alongActive ? "Stop" : "Along")
                     .font(.system(size: 12, weight: .semibold, design: .monospaced))
                     .frame(maxWidth: .infinity).padding(.vertical, 13)
                     .contentShape(Rectangle())
             }
-            .foregroundStyle(Color.heldBrass)
-            .background(Color.heldPanel)
-            .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.heldBrass, lineWidth: 1))
+            .foregroundStyle(alongActive ? Color.heldBg : Color.heldBrass)
+            .background(alongActive ? Color.heldRed : Color.heldPanel)
+            .overlay(RoundedRectangle(cornerRadius: 10)
+                .stroke(alongActive ? Color.heldRed : Color.heldBrass, lineWidth: 1))
             .clipShape(RoundedRectangle(cornerRadius: 10))
             .disabled(!engine.isRunning)
             .opacity(engine.isRunning ? 1 : 0.4)
 
             Button {
-                if singActive { model.stopAll() } else { model.sing() }
+                if singOnlyActive { model.stopAll() } else { model.sing() }
             } label: {
-                Text(singActive && !model.singingAlong ? singLabel : "Sing")
+                Text(singOnlyActive ? "Stop" : "Sing")
                     .font(.system(size: 12, weight: .semibold, design: .monospaced))
                     .frame(maxWidth: .infinity).padding(.vertical, 13)
                     .contentShape(Rectangle())
             }
             .foregroundStyle(Color.heldBg)
-            .background(singActive && !model.singingAlong ? Color.heldRed : Color.heldBrass)
+            .background(singOnlyActive ? Color.heldRed : Color.heldBrass)
             .clipShape(RoundedRectangle(cornerRadius: 10))
             .disabled(!engine.isRunning)
             .opacity(engine.isRunning ? 1 : 0.4)
@@ -221,13 +224,8 @@ struct SongPracticeView: View {
         model.phase == .singing || model.phase == .leadIn
     }
 
-    private var singLabel: String {
-        switch model.phase {
-        case .leadIn: return "Ready…"
-        case .singing: return "Singing"
-        default: return "Sing"
-        }
-    }
+    private var alongActive: Bool { singActive && model.singingAlong }
+    private var singOnlyActive: Bool { singActive && !model.singingAlong }
 
     // MARK: - Mic gate
 
@@ -305,6 +303,35 @@ private struct PianoRoll: View {
                         .foregroundColor(Color.heldDim),
                     at: CGPoint(x: 16, y: yy - 8)
                 )
+            }
+
+            // motion cues while scrolling: without them, an empty
+            // stretch (intro, break) looks like the app stopped
+            if scrolling {
+                let first = Int(t0.rounded(.up))
+                let last = Int((t0 + span).rounded(.down))
+                if first <= last {
+                    for sec in first...last where sec >= 0 {
+                        var line = Path()
+                        let xx = x(Double(sec))
+                        line.move(to: CGPoint(x: xx, y: 0))
+                        line.addLine(to: CGPoint(x: xx, y: size.height))
+                        ctx.stroke(line, with: .color(Color.heldLine.opacity(0.35)),
+                                   lineWidth: 1)
+                    }
+                }
+                let nowT = model.spanStart + heardCursor
+                if let next = notes.first(where: { $0.displayStart > nowT }),
+                   next.displayStart > t0 + span {
+                    let wait = Int((next.displayStart - nowT).rounded())
+                    ctx.draw(
+                        Text("\u{266A} in \(wait)s")
+                            .font(.system(size: 13, design: .monospaced))
+                            .foregroundColor(Color.heldDim),
+                        at: CGPoint(x: size.width * nowFraction + 60,
+                                    y: size.height / 2)
+                    )
+                }
             }
 
             // target note bars: dim span = where the word is (voice
