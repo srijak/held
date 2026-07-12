@@ -126,8 +126,8 @@ def ensure_stereo(path: Path) -> Path:
     return stereo
 
 
-def separate_vocals(input_path: Path, keep_stems: bool) -> Path:
-    """Run Demucs two-stem separation, return path to vocals.wav."""
+def separate_vocals(input_path: Path, keep_stems: bool):
+    """Run Demucs two-stem separation, return (vocals.wav, no_vocals.wav)."""
     out_dir = (
         input_path.parent / "stems"
         if keep_stems
@@ -151,7 +151,8 @@ def separate_vocals(input_path: Path, keep_stems: bool) -> Path:
     candidates = list(out_dir.rglob("vocals.wav"))
     if not candidates:
         sys.exit(f"demucs produced no vocals.wav under {out_dir}")
-    return candidates[0]
+    backing = list(out_dir.rglob("no_vocals.wav"))
+    return candidates[0], (backing[0] if backing else None)
 
 
 # ------------------------------------------------------------- pitch tracking
@@ -175,7 +176,17 @@ def track_pitch(vocal_path: Path):
     midi = np.full_like(f0, np.nan)
     voiced = ~np.isnan(f0)
     midi[voiced] = librosa.hz_to_midi(f0[voiced])
-    return times, midi, np.nan_to_num(voiced_prob, nan=0.0)
+
+    # loudness envelope on the same frame grid, normalized so the app
+    # can shape synth amplitude by the singer's actual energy contour
+    rms = librosa.feature.rms(y=y, frame_length=2048, hop_length=hop)[0]
+    n = min(len(rms), len(f0))
+    rms, times, midi = rms[:n], times[:n], midi[:n]
+    voiced_prob = voiced_prob[:n]
+    ref = np.percentile(rms[rms > 0], 95) if np.any(rms > 0) else 1.0
+    rms = np.clip(rms / max(ref, 1e-9), 0, 1)
+
+    return times, midi, np.nan_to_num(voiced_prob, nan=0.0), rms
 
 
 # ------------------------------------------------------------ post-processing
@@ -218,53 +229,254 @@ def bridge_gaps(midi: np.ndarray, times: np.ndarray, max_gap_s: float = 0.06):
     return out
 
 
-def segment_notes(
+def viterbi_notes(
     midi: np.ndarray,
     times: np.ndarray,
-    split_semitones: float = 0.6,
-    min_note_s: float = 0.08,
+    lo: int = 36,
+    hi: int = 84,
+    deadband: float = 0.25,
+    switch_cost: float = 3.0,
+    dist_cost: float = 0.05,
+    min_note_s: float = 0.10,
 ):
-    """Split the frame track into note segments on pitch jumps or
-    unvoiced gaps. Returns list of dicts."""
+    """Decode the frame pitch track into notes via Viterbi over semitone
+    states: deviating from a state is cheap inside the deadband (vibrato
+    is free), switching states costs enough that scoops and wobble get
+    absorbed while genuine note changes do not. Globally optimal, unlike
+    greedy splitting — the difference between 8 clean notes and 11
+    fragments on the same sung phrase."""
+    hop = float(times[1] - times[0]) if len(times) > 1 else 0.023
+    states = np.arange(lo, hi + 1)
+    S = len(states)
     notes = []
-    seg_start = None
-    seg_frames = []
 
-    def flush(end_idx):
-        nonlocal seg_start, seg_frames
-        if seg_start is None or not seg_frames:
-            seg_start, seg_frames = None, []
-            return
-        start_t = times[seg_start]
-        end_t = times[end_idx]
-        if end_t - start_t >= min_note_s:
-            arr = np.array(seg_frames)
+    voiced = ~np.isnan(midi)
+    n = len(midi)
+    i = 0
+    while i < n:
+        if not voiced[i]:
+            i += 1
+            continue
+        j = i
+        while j < n and voiced[j]:
+            j += 1
+        run = midi[i:j]
+        T = len(run)
+        dev = np.abs(run[:, None] - states[None, :]) - deadband
+        emit = np.maximum(dev, 0) ** 2
+        ds = np.abs(states[:, None] - states[None, :])
+        trans = np.where(ds == 0, 0.0, switch_cost + dist_cost * ds)
+
+        cost = emit[0].copy()
+        back = np.zeros((T, S), dtype=np.int32)
+        for t in range(1, T):
+            total = cost[:, None] + trans
+            back[t] = np.argmin(total, axis=0)
+            cost = total[back[t], np.arange(S)] + emit[t]
+        path = np.zeros(T, dtype=np.int32)
+        path[-1] = int(np.argmin(cost))
+        for t in range(T - 2, -1, -1):
+            path[t] = back[t + 1][path[t + 1]]
+
+        k = 0
+        while k < T:
+            m = k
+            while m < T and path[m] == path[k]:
+                m += 1
             notes.append(
                 {
-                    "start": round(float(start_t), 3),
-                    "end": round(float(end_t), 3),
-                    "midi": int(np.round(np.median(arr))),
-                    "midi_float": round(float(np.median(arr)), 2),
+                    "start": round(float(times[i + k]), 3),
+                    "end": round(float(times[i + m - 1] + hop), 3),
+                    "midi": int(states[path[k]]),
+                    "midi_float": round(float(np.median(run[k:m])), 2),
                 }
             )
-        seg_start, seg_frames = None, []
+            k = m
+        i = j
 
-    for i in range(len(midi)):
-        if np.isnan(midi[i]):
-            flush(i - 1 if i > 0 else 0)
-            continue
-        if seg_start is None:
-            seg_start = i
-            seg_frames = [midi[i]]
-            continue
-        if abs(midi[i] - np.median(seg_frames)) > split_semitones:
-            flush(i - 1)
-            seg_start = i
-            seg_frames = [midi[i]]
+    # absorb sub-minimum fragments into the longer adjacent note
+    def dur(x):
+        return x["end"] - x["start"]
+
+    changed = True
+    while changed:
+        changed = False
+        for k, nte in enumerate(notes):
+            if dur(nte) >= min_note_s:
+                continue
+            prev = (
+                notes[k - 1]
+                if k > 0 and abs(notes[k - 1]["end"] - nte["start"]) < 0.05
+                else None
+            )
+            nxt = (
+                notes[k + 1]
+                if k + 1 < len(notes) and abs(notes[k + 1]["start"] - nte["end"]) < 0.05
+                else None
+            )
+            host = prev if (prev and (not nxt or dur(prev) >= dur(nxt))) else nxt
+            if host is None:
+                notes.pop(k)
+            elif host is prev:
+                prev["end"] = nte["end"]
+                notes.pop(k)
+            else:
+                nxt["start"] = nte["start"]
+                notes.pop(k)
+            changed = True
+            break
+
+    # merge same-pitch adjacents across small gaps
+    out = [notes[0]] if notes else []
+    for nte in notes[1:]:
+        prev = out[-1]
+        if nte["midi"] == prev["midi"] and nte["start"] - prev["end"] <= 0.12:
+            prev["end"] = nte["end"]
+            prev["midi_float"] = round((prev["midi_float"] + nte["midi_float"]) / 2, 2)
         else:
-            seg_frames.append(midi[i])
-    flush(len(midi) - 1)
+            out.append(nte)
+    return out
+
+
+def extend_notes_by_activity(
+    notes,
+    times: np.ndarray,
+    rms: np.ndarray,
+    threshold: float = 0.06,
+    max_ext_s: float = 0.45,
+    max_dropout_frames: int = 3,
+):
+    """Add vstart/vend to each note: the note's boundaries pushed outward
+    through contiguous voice ACTIVITY (RMS above threshold). Pitch only
+    exists on vowels; the word audibly starts at the consonant and can
+    trail off breathy. vstart/vend track the word, start/end stay the
+    scoreable pitched core — the app draws the former, scores the latter."""
+    if not len(times):
+        return notes
+    hop = float(times[1] - times[0]) if len(times) > 1 else 0.023
+    active = rms > threshold
+
+    def idx(t):
+        return int(max(0, min(len(times) - 1, round((t - times[0]) / hop))))
+
+    for i, note in enumerate(notes):
+        lo_limit = notes[i - 1]["end"] if i > 0 else 0.0
+        hi_limit = notes[i + 1]["start"] if i + 1 < len(notes) else times[-1] + hop
+
+        k = idx(note["start"])
+        vstart = note["start"]
+        dropout = 0
+        while (
+            k - 1 >= 0
+            and times[k - 1] >= lo_limit
+            and note["start"] - times[k - 1] <= max_ext_s
+        ):
+            if active[k - 1]:
+                dropout = 0
+                k -= 1
+                vstart = times[k]
+            elif dropout < max_dropout_frames:
+                dropout += 1
+                k -= 1
+            else:
+                break
+
+        k = idx(note["end"])
+        vend = note["end"]
+        dropout = 0
+        while (
+            k + 1 < len(times)
+            and times[k + 1] + hop <= hi_limit
+            and times[k + 1] - note["end"] <= max_ext_s
+        ):
+            if active[k + 1]:
+                dropout = 0
+                k += 1
+                vend = times[k] + hop
+            elif dropout < max_dropout_frames:
+                dropout += 1
+                k += 1
+            else:
+                break
+
+        if vstart < note["start"] - 1e-3:
+            note["vstart"] = round(float(vstart), 3)
+        if vend > note["end"] + 1e-3:
+            note["vend"] = round(float(vend), 3)
     return notes
+
+
+
+def coverage_report(notes, times: np.ndarray, rms: np.ndarray,
+                    threshold: float = 0.06, min_gap_s: float = 0.3):
+    """How much of the audible vocal is covered by notes? Prints the
+    largest uncovered active spans so missing coverage can be located
+    in the audio by timestamp."""
+    if not len(times) or not notes:
+        return
+    hop = float(times[1] - times[0]) if len(times) > 1 else 0.023
+    active = rms > threshold
+    covered = np.zeros(len(times), dtype=bool)
+    for n in notes:
+        a = int(max(0, (n.get("vstart", n["start"]) - times[0]) / hop))
+        b = int(min(len(times), (n.get("vend", n["end"]) - times[0]) / hop + 1))
+        covered[a:b] = True
+    miss = active & ~covered
+    total_active = active.sum() * hop
+    if total_active <= 0:
+        return
+    pct = 100 * (1 - miss.sum() / max(1, active.sum()))
+    spans = []
+    i = 0
+    while i < len(miss):
+        if not miss[i]:
+            i += 1
+            continue
+        j = i
+        while j < len(miss) and miss[j]:
+            j += 1
+        if (j - i) * hop >= min_gap_s:
+            spans.append((times[i], (j - i) * hop))
+        i = j
+    print(f"  coverage: {pct:.0f}% of audible vocal has a note")
+    for t0, d in sorted(spans, key=lambda x: -x[1])[:5]:
+        print(f"    uncovered: {t0:6.1f}s  ({d:.1f}s of voice, no note)")
+
+
+def encode_vocal_clip(src: Path, out_audio: Path, peak_target: float = 0.9,
+                      mono: bool = True, bitrate: int = 64000) -> bool:
+    """Peak-normalize a stem and encode to AAC for the app. afconvert
+    ships with macOS; ffmpeg is the fallback. Backing keeps stereo and a
+    lower peak so the vocal sits on top in Both mode."""
+    import soundfile as sf
+    try:
+        data, sr = sf.read(str(src), always_2d=True)
+    except Exception as e:
+        print(f"      audio encode skipped ({e})", file=sys.stderr)
+        return False
+    if mono:
+        data = data.mean(axis=1)
+    peak = float(np.abs(data).max()) or 1.0
+    data = data * (peak_target / peak)
+    tmp = out_audio.with_suffix(".norm.wav")
+    sf.write(str(tmp), data, sr)
+    for cmd in (
+        ["afconvert", "-f", "m4af", "-d", "aac", "-b", str(bitrate),
+         str(tmp), str(out_audio)],
+        ["ffmpeg", "-y", "-loglevel", "error", "-i", str(tmp),
+         "-c:a", "aac", "-b:a", f"{bitrate // 1000}k", str(out_audio)],
+    ):
+        try:
+            r = subprocess.run(cmd, capture_output=True)
+            if r.returncode == 0 and out_audio.exists():
+                tmp.unlink(missing_ok=True)
+                return True
+        except FileNotFoundError:
+            continue
+    tmp.unlink(missing_ok=True)
+    print("      audio encode failed (need afconvert or ffmpeg)",
+          file=sys.stderr)
+    return False
 
 
 # ----------------------------------------------------------------------- main
@@ -302,10 +514,16 @@ def main():
         help="keep demucs stems next to the input instead of a temp dir",
     )
     ap.add_argument(
+        "--no-audio", action="store_true",
+        help="skip encoding the vocal stem clip for the app",
+    )
+    ap.add_argument(
         "--min-confidence",
         type=float,
-        default=0.5,
-        help="drop frames below this voiced probability (default 0.5)",
+        default=0.35,
+        help="drop frames below this voiced probability (default 0.35; "
+             "Viterbi decoding tolerates noisy frames, so keep this low "
+             "for coverage)",
     )
     args = ap.parse_args()
 
@@ -333,25 +551,27 @@ def main():
         sys.exit(f"no such file: {args.input}")
     out_path = args.output or args.input.with_suffix(".notes.json")
 
-    vocal_path = (
-        args.input
-        if args.skip_separation
-        else separate_vocals(ensure_stereo(args.input), args.keep_stems)
-    )
+    if args.skip_separation:
+        vocal_path, backing_path = args.input, None
+    else:
+        vocal_path, backing_path = separate_vocals(
+            ensure_stereo(args.input), args.keep_stems)
 
-    times, midi, conf = track_pitch(vocal_path)
+    times, midi, conf, rms = track_pitch(vocal_path)
 
     # confidence gate, then smooth, then bridge
     midi[conf < args.min_confidence] = np.nan
     midi = median_smooth(midi, k=5)
     midi = bridge_gaps(midi, times)
 
-    notes = segment_notes(midi, times)
+    notes = extend_notes_by_activity(viterbi_notes(midi, times), times, rms)
+    coverage_report(notes, times, rms)
 
     print("[3/3] writing JSON")
     frames = {
         "t": [round(float(t), 3) for t in times],
         "midi": [None if np.isnan(m) else round(float(m), 2) for m in midi],
+        "rms": [round(float(r), 3) for r in rms],
     }
     doc = {
         "source": args.input.name,
@@ -360,6 +580,23 @@ def main():
         "frames": frames,
     }
     out_path.write_text(json.dumps(doc))
+
+    if not args.no_audio:
+        stem = out_path.name
+        for suf in (".notes.json", ".json"):
+            if stem.endswith(suf):
+                stem = stem[: -len(suf)]
+                break
+        audio_out = out_path.with_name(stem + ".vocals.m4a")
+        if encode_vocal_clip(vocal_path, audio_out):
+            kb = audio_out.stat().st_size // 1024
+            print(f"  vocal clip: {audio_out.name} ({kb} KB)")
+        if backing_path is not None:
+            backing_out = out_path.with_name(stem + ".backing.m4a")
+            if encode_vocal_clip(backing_path, backing_out, peak_target=0.7,
+                                 mono=False, bitrate=96000):
+                kb = backing_out.stat().st_size // 1024
+                print(f"  backing clip: {backing_out.name} ({kb} KB)")
 
     voiced_pct = 100 * np.count_nonzero(~np.isnan(midi)) / max(1, len(midi))
     if notes:

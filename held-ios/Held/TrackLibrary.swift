@@ -27,7 +27,7 @@ final class TrackLibrary: ObservableObject {
     init() {
         repo = UserDefaults.standard.string(forKey: "lib.repo")
             ?? Secrets.defaultRepo ?? "owner/held-tracks"
-        branch = UserDefaults.standard.string(forKey: "lib.branch") ?? "main"
+        branch = UserDefaults.standard.string(forKey: "lib.branch") ?? "master"
         token = Keychain.get("lib.token") ?? ""
         try? FileManager.default.createDirectory(
             at: Self.tracksDir, withIntermediateDirectories: true)

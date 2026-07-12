@@ -16,6 +16,25 @@ final class QuizModel: ObservableObject {
         let notes: [MelodyTrack.Note]
     }
 
+    enum QuizSource: String, CaseIterable {
+        case vocal, band, reverse
+        var title: String {
+            switch self {
+            case .vocal: return "Vocal"
+            case .band: return "Band"
+            case .reverse: return "Reverse"
+            }
+        }
+        var needsBacking: Bool { self != .vocal }
+    }
+
+    struct Player: Identifiable, Equatable {
+        let id: Int
+        var name: String
+        var score = 0
+        var streak = 0
+    }
+
     enum Phase: Equatable {
         case idle
         case playing
@@ -29,9 +48,17 @@ final class QuizModel: ObservableObject {
     @Published var streak = 0
     @Published var bestStreak: Int
     @Published var roundsPlayed = 0
-    /// Band mode: same note window, backing stem — the hard version.
-    @Published var useBacking: Bool {
-        didSet { UserDefaults.standard.set(useBacking, forKey: "quiz.backing") }
+    @Published var players: [Player] = [Player(id: 0, name: "Player 1")]
+    @Published var currentPlayerIndex = 0
+    var isMultiplayer: Bool { players.count > 1 }
+    var currentPlayer: Player { players[min(currentPlayerIndex, players.count - 1)] }
+    var nextPlayerName: String {
+        players[(currentPlayerIndex + 1) % players.count].name
+    }
+    /// Vocal = first N sung notes. Band = the song's opening from the
+    /// backing stem. Reverse = 30s of the backing played backwards.
+    @Published var quizSource: QuizSource {
+        didSet { UserDefaults.standard.set(quizSource.rawValue, forKey: "quiz.source") }
     }
 
     let tracks: [QuizTrack]
@@ -49,14 +76,23 @@ final class QuizModel: ObservableObject {
         self.tracks = tracks
         self.allTitles = Array(Set(allTitles).union(tracks.map(\.title)))
         self.bestStreak = UserDefaults.standard.integer(forKey: "quiz.bestStreak")
-        self.useBacking = UserDefaults.standard.bool(forKey: "quiz.backing")
-        if self.useBacking && tracks.filter({ $0.backingURL != nil }).count < 2 {
-            self.useBacking = false
+        if let names = UserDefaults.standard.stringArray(forKey: "quiz.playerNames"),
+           !names.isEmpty {
+            self.players = names.enumerated().map {
+                Player(id: $0.offset, name: $0.element)
+            }
+        }
+        let saved = UserDefaults.standard.string(forKey: "quiz.source")
+            .flatMap(QuizSource.init(rawValue:)) ?? .vocal
+        self.quizSource = saved
+        if self.quizSource.needsBacking
+            && tracks.filter({ $0.backingURL != nil }).count < 2 {
+            self.quizSource = .vocal
         }
     }
 
     private var eligible: [QuizTrack] {
-        useBacking ? tracks.filter { $0.backingURL != nil } : tracks
+        quizSource.needsBacking ? tracks.filter { $0.backingURL != nil } : tracks
     }
 
     var bandSeconds: Double { Double(notesToPlay) + 1 }   // 6s down to 3s
@@ -67,6 +103,29 @@ final class QuizModel: ObservableObject {
 
     /// Needs at least two guessable tracks and four titles for options.
     var canPlay: Bool { eligible.count >= 2 && allTitles.count >= 4 }
+
+    /// Set the roster (1 = single player) and reset the match.
+    func configurePlayers(_ names: [String]) {
+        let cleaned = names.enumerated().map { i, n in
+            n.trimmingCharacters(in: .whitespaces).isEmpty ? "Player \(i + 1)" : n
+        }
+        players = cleaned.enumerated().map { Player(id: $0.offset, name: $0.element) }
+        currentPlayerIndex = 0
+        streak = 0
+        notesToPlay = 5
+        UserDefaults.standard.set(cleaned, forKey: "quiz.playerNames")
+    }
+
+    /// Advance the turn (multiplayer) and deal the next round with the
+    /// incoming player's own difficulty.
+    func nextRound() {
+        if isMultiplayer, case .answered = phase {
+            currentPlayerIndex = (currentPlayerIndex + 1) % players.count
+            streak = players[currentPlayerIndex].streak
+            notesToPlay = max(2, 5 - streak / 2)
+        }
+        startRound()
+    }
 
     func startRound() {
         guard canPlay else { return }
@@ -89,7 +148,7 @@ final class QuizModel: ObservableObject {
     /// scales through note count, not through denying another listen.
     func play() {
         guard let t = current else { return }
-        let url = (useBacking ? t.backingURL : nil) ?? t.audioURL
+        let url = (quizSource.needsBacking ? t.backingURL : nil) ?? t.audioURL
         do {
             let f: AVAudioFile
             if let existing = file, existing.url == url {
@@ -116,12 +175,16 @@ final class QuizModel: ObservableObject {
                 try engine.start()
             }
 
+            if quizSource == .reverse {
+                playReversed(f)
+                return
+            }
             // Band mode: the song's actual opening — bar one is where
             // arrangements identify themselves. Clip length shrinks with
             // streak. Vocal mode: first N sung notes.
             let t0: Double
             let t1: Double
-            if useBacking {
+            if quizSource == .band {
                 t0 = 0
                 t1 = bandSeconds
             } else {
@@ -142,12 +205,44 @@ final class QuizModel: ObservableObject {
         } catch {}
     }
 
+    static let reverseSeconds: Double = 30
+
+    /// A file segment can't be scheduled backwards: read the opening
+    /// into a PCM buffer and reverse the samples in place.
+    private func playReversed(_ f: AVAudioFile) {
+        let sr = f.processingFormat.sampleRate
+        let count = AVAudioFrameCount(min(Self.reverseSeconds * sr, Double(f.length)))
+        guard count > 0,
+              let buf = AVAudioPCMBuffer(pcmFormat: f.processingFormat,
+                                         frameCapacity: count)
+        else { return }
+        f.framePosition = 0
+        guard (try? f.read(into: buf, frameCount: count)) != nil else { return }
+        let n = Int(buf.frameLength)
+        if let ch = buf.floatChannelData {
+            for c in 0..<Int(f.processingFormat.channelCount) {
+                let p = ch[c]
+                var i = 0
+                var j = n - 1
+                while i < j {
+                    let tmp = p[i]; p[i] = p[j]; p[j] = tmp
+                    i += 1; j -= 1
+                }
+            }
+        }
+        player.stop()
+        player.scheduleBuffer(buf, at: nil)
+        player.play()
+    }
+
     func answer(_ title: String) {
         guard case .playing = phase else { return }
         player.stop()
         let correct = title == correctTitle
         if correct {
             streak += 1
+            players[currentPlayerIndex].score += 1
+            players[currentPlayerIndex].streak = streak
             if streak > bestStreak {
                 bestStreak = streak
                 UserDefaults.standard.set(bestStreak, forKey: "quiz.bestStreak")
@@ -155,6 +250,7 @@ final class QuizModel: ObservableObject {
             notesToPlay = max(2, 5 - streak / 2)
         } else {
             streak = 0
+            players[currentPlayerIndex].streak = 0
             notesToPlay = 5
         }
         phase = .answered(pickedCorrect: correct, picked: title)
