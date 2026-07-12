@@ -104,7 +104,28 @@ def record_audio(device, duration, out_path: Path) -> Path:
     return out_path
 
 
+
 # ---------------------------------------------------------------- separation
+def ensure_stereo(path: Path) -> Path:
+    """Demucs upmixes mono via tensor.expand(), then does in-place math on
+    the view — a hard error under torch 2.x ("more than one element of the
+    written-to tensor refers to a single memory location"). Feed it real
+    stereo: duplicate the channel to a sibling file when input is mono.
+    Non-wav/flac inputs (mp3 etc.) pass through — commercial mixes are
+    stereo already."""
+    try:
+        import soundfile as sf
+        data, sr = sf.read(str(path), always_2d=True)
+    except Exception:
+        return path
+    if data.shape[1] >= 2:
+        return path
+    stereo = path.with_name(path.stem + ".stereo.wav")
+    sf.write(str(stereo), np.repeat(data, 2, axis=1), sr)
+    print(f"      mono input — wrote stereo copy {stereo.name} for demucs")
+    return stereo
+
+
 def separate_vocals(input_path: Path, keep_stems: bool) -> Path:
     """Run Demucs two-stem separation, return path to vocals.wav."""
     out_dir = (
@@ -315,7 +336,7 @@ def main():
     vocal_path = (
         args.input
         if args.skip_separation
-        else separate_vocals(args.input, args.keep_stems)
+        else separate_vocals(ensure_stereo(args.input), args.keep_stems)
     )
 
     times, midi, conf = track_pitch(vocal_path)
