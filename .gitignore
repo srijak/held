@@ -1,4 +1,5 @@
 Secrets.swift
+*.py
 *.m4a
 *.json
 *.wav
