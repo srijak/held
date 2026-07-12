@@ -108,6 +108,7 @@ final class SongModel: ObservableObject {
     private let filePlayerNode = AVAudioPlayerNode()
     private let backingPlayerNode = AVAudioPlayerNode()
     private var configuredNodes = Set<ObjectIdentifier>()
+    private var synthTask: Task<Void, Never>?
     private let vocalFile: AVAudioFile?
     private let backingFile: AVAudioFile?
     var hasAudio: Bool { vocalFile != nil || backingFile != nil }
@@ -276,11 +277,7 @@ final class SongModel: ObservableObject {
 
         let files = playbackFiles()
         if files.isEmpty {
-            do { try ensurePlayer() } catch { return }
-            guard let buf = makeSynthBuffer() else { return }
-            playerNode.stop()
-            playerNode.scheduleBuffer(buf, at: nil)
-            playerNode.play()
+            guard startSynthPlayback(at: nil) else { return }
             displayLatency = AVAudioSession.sharedInstance().outputLatency
             phase = .listening
             startClock(offset: 0, total: spanEnd - spanStart) { [weak self] in
@@ -336,36 +333,12 @@ final class SongModel: ObservableObject {
         return ok
     }
 
-    private func makeSynthBuffer() -> AVAudioPCMBuffer? {
-        let sr = playEngine.mainMixerNode.outputFormat(forBus: 0).sampleRate
-        let dur = (spanEnd - spanStart) + 0.3
-        let frames = AVAudioFrameCount(sr * dur)
-        guard
-            let fmt = AVAudioFormat(standardFormatWithSampleRate: sr, channels: 1),
-            let buf = AVAudioPCMBuffer(pcmFormat: fmt, frameCapacity: frames)
-        else { return nil }
-        buf.frameLength = frames
-        let data = buf.floatChannelData![0]
-        for i in 0..<Int(frames) { data[i] = 0 }
-        fillLegatoNotes(data: data, totalFrames: Int(frames), sr: sr)
-        return buf
-    }
-
-    /// Clean-reference synthesis from the segmented notes: each note
-    /// holds its scored pitch and extends to the next onset (gaps up to
-    /// 2s are sung through); pitch runs through a ~30ms exponential
-    /// smoother so every note change becomes a natural portamento, and
-    /// entrances after real silence scoop up from just below. The real
-    /// vocal clip owns "sounds like the singer"; this owns "the target."
-    private func fillLegatoNotes(data: UnsafeMutablePointer<Float>, totalFrames: Int, sr: Double) {
+    /// Target pitch segments: transpose + word-edge (vstart/vend) logic.
+    private func legatoSegs() -> [LegatoSynth.Seg] {
         let notes = spanNotes
-        guard !notes.isEmpty else { return }
-
-        struct Seg { let start: Double; let end: Double; let midi: Double }
-        var segs: [Seg] = []
+        guard !notes.isEmpty else { return [] }
+        var segs: [LegatoSynth.Seg] = []
         for (i, n) in notes.enumerated() {
-            // phrase-initial onset begins where the WORD begins (vstart)
-            // so the reference and the heard vocal enter together
             var start = n.start
             if i == 0 || n.start - notes[i - 1].end > Self.legatoMaxGap {
                 start = n.displayStart
@@ -375,53 +348,66 @@ final class SongModel: ObservableObject {
                notes[i + 1].start - n.end <= Self.legatoMaxGap {
                 end = notes[i + 1].start
             } else {
-                end = n.displayEnd   // phrase tail rings through the word
+                end = n.displayEnd
             }
-            segs.append(Seg(start: start, end: end, midi: targetMidi(n)))
+            segs.append(LegatoSynth.Seg(start: start, end: end, midi: targetMidi(n)))
         }
+        return segs
+    }
 
-        var idx = 0
-        var phase = 0.0
-        var amp = 0.0
-        var smoothed = 0.0
-        var voicedTime = 0.0
-        var haveVoice = false
-        var gains = [Double](repeating: 0, count: Self.harmonicCount)
-        var gainF0 = -1.0
-        let ampSlew = 1 - exp(-1.0 / (sr * 0.012))
-        let glideK = 1 - exp(-1.0 / (sr * 0.030))
+    /// Synth playback streams in ~4s blocks: the first renders
+    /// synchronously (fast), the rest in a background task appending to
+    /// the player queue. A full song is minutes of audio — rendering it
+    /// all up front froze the UI for seconds.
+    private func startSynthPlayback(at when: AVAudioTime?) -> Bool {
+        guard (try? ensurePlayer()) != nil else { return false }
+        let segs = legatoSegs()
+        guard !segs.isEmpty else { return false }
+        let sr = playEngine.mainMixerNode.outputFormat(forBus: 0).sampleRate
+        guard let fmt = AVAudioFormat(standardFormatWithSampleRate: sr, channels: 1)
+        else { return false }
+        let synth = LegatoSynth(segs: segs, sr: sr, startTime: spanStart)
+        var remaining = Int(((spanEnd - spanStart) + 0.3) * sr)
+        let blockFrames = Int(4.0 * sr)
 
-        for n in 0..<totalFrames {
-            let t = spanStart + Double(n) / sr
-            while idx + 1 < segs.count, t >= segs[idx + 1].start { idx += 1 }
-            var target: Double?
-            if t >= segs[idx].start, t < segs[idx].end { target = segs[idx].midi }
+        guard let first = Self.renderBlock(synth, frames: min(blockFrames, remaining),
+                                           format: fmt) else { return false }
+        remaining -= Int(first.frameLength)
+        playerNode.stop()
+        playerNode.scheduleBuffer(first, at: nil)
+        if let when { playerNode.play(at: when) } else { playerNode.play() }
 
-            if let m = target {
-                if !haveVoice {
-                    smoothed = m - 0.8   // onset scoop from below
-                    haveVoice = true
-                    voicedTime = 0
+        synthTask?.cancel()
+        if remaining > 0 {
+            let node = playerNode
+            synthTask = Task.detached(priority: .userInitiated) {
+                var left = remaining
+                while left > 0, !Task.isCancelled {
+                    guard let buf = Self.renderBlock(
+                        synth, frames: min(blockFrames, left), format: fmt)
+                    else { return }
+                    left -= Int(buf.frameLength)
+                    await MainActor.run {
+                        if !Task.isCancelled { node.scheduleBuffer(buf, at: nil) }
+                    }
                 }
-                smoothed += (m - smoothed) * glideK
-                voicedTime += 1 / sr
-                var f = PitchEngine.midiToFreq(smoothed)
-                f *= Self.vibratoFactor(voicedTime: voicedTime)
-                if abs(f - gainF0) > 1.5 || n % 128 == 0 {
-                    Self.formantGains(f0: f, into: &gains)
-                    gainF0 = f
-                }
-                phase += 2 * Double.pi * f / sr
-                if phase > 2 * Double.pi * 1000 { phase -= 2 * Double.pi * 1000 }
-            } else {
-                haveVoice = false
-            }
-
-            amp += ((target != nil ? 1.0 : 0.0) - amp) * ampSlew
-            if amp > 0.0005 {
-                data[n] += Float(Self.tone(phase: phase, gains: gains) * amp)
             }
         }
+        return true
+    }
+
+    nonisolated private static func renderBlock(
+        _ synth: LegatoSynth, frames: Int, format: AVAudioFormat
+    ) -> AVAudioPCMBuffer? {
+        guard frames > 0,
+              let buf = AVAudioPCMBuffer(pcmFormat: format,
+                                         frameCapacity: AVAudioFrameCount(frames))
+        else { return nil }
+        buf.frameLength = AVAudioFrameCount(frames)
+        let data = buf.floatChannelData![0]
+        for i in 0..<frames { data[i] = 0 }
+        synth.render(into: data, frames: frames)
+        return buf
     }
 
     // MARK: - Voice-like tone
@@ -430,9 +416,9 @@ final class SongModel: ObservableObject {
     /// with resonance bumps near the first formants of an "ah" vowel
     /// (~730 / 1090 / 2450 Hz) — voice-like, and it concentrates energy
     /// where phone speakers actually reproduce.
-    private static let harmonicCount = 8
+    fileprivate static let harmonicCount = 8
 
-    nonisolated private static func formantGains(f0: Double, into gains: inout [Double]) {
+    nonisolated fileprivate static func formantGains(f0: Double, into gains: inout [Double]) {
         func bump(_ f: Double, _ c: Double, _ w: Double) -> Double {
             let d = (f - c) / w
             return exp(-d * d)
@@ -454,14 +440,14 @@ final class SongModel: ObservableObject {
     /// Delayed vibrato: onset ~0.25s into sustained voicing, ±7 cents
     /// at 5.3 Hz — well inside the ±50¢ scoring band, so the reference
     /// stays honest while sounding sung rather than held by a machine.
-    nonisolated private static func vibratoFactor(voicedTime: Double) -> Double {
+    nonisolated fileprivate static func vibratoFactor(voicedTime: Double) -> Double {
         let depth = min(1, max(0, (voicedTime - 0.25) / 0.4)) * 7.0  // cents
         guard depth > 0 else { return 1 }
         let cents = sin(2 * Double.pi * 5.3 * voicedTime) * depth
         return pow(2, cents / 1200)
     }
 
-    nonisolated private static func tone(phase: Double, gains: [Double]) -> Double {
+    nonisolated fileprivate static func tone(phase: Double, gains: [Double]) -> Double {
         var out = 0.0
         for k in 0..<harmonicCount {
             out += gains[k] * sin(Double(k + 1) * phase)
@@ -540,10 +526,7 @@ final class SongModel: ObservableObject {
                 + AVAudioTime.hostTime(forSeconds: Self.leadInSeconds))
         let files = playbackFiles()
         if files.isEmpty {
-            guard (try? ensurePlayer()) != nil, let buf = makeSynthBuffer() else { return }
-            playerNode.stop()
-            playerNode.scheduleBuffer(buf, at: nil)
-            playerNode.play(at: when)
+            _ = startSynthPlayback(at: when)
         } else {
             // run-in plays during the count-in: audio position spanStart
             // still lands exactly at clock zero
@@ -657,12 +640,87 @@ final class SongModel: ObservableObject {
         displayTimer?.invalidate()
         displayTimer = nil
         pitchSub = nil
+        synthTask?.cancel()
+        synthTask = nil
         playerNode.stop()
         filePlayerNode.stop()
         backingPlayerNode.stop()
         if phase == .listening || phase == .leadIn || phase == .singing {
             phase = .idle
             cursor = 0
+        }
+    }
+}
+
+
+/// Streamed clean-reference synthesizer: a pure state machine rendering
+/// successive blocks, so phase, glide, and amplitude carry seamlessly
+/// across buffer seams. Vibrato and formant gains update per 64-sample
+/// block instead of per sample — inaudible at 1.5ms granularity, ~10x
+/// cheaper.
+private final class LegatoSynth: @unchecked Sendable {
+    struct Seg { let start: Double; let end: Double; let midi: Double }
+
+    private let segs: [Seg]
+    private let sr: Double
+    private var t: Double
+    private var idx = 0
+    private var phase = 0.0
+    private var amp = 0.0
+    private var smoothed = 0.0
+    private var voicedTime = 0.0
+    private var haveVoice = false
+    private var gains = [Double](repeating: 0, count: SongModel.harmonicCount)
+    private var gainF0 = -1.0
+    private let ampSlew: Double
+
+    init(segs: [Seg], sr: Double, startTime: Double) {
+        self.segs = segs
+        self.sr = sr
+        self.t = startTime
+        self.ampSlew = 1 - exp(-1.0 / (sr * 0.012))
+    }
+
+    func render(into data: UnsafeMutablePointer<Float>, frames: Int) {
+        var n = 0
+        while n < frames {
+            let block = min(64, frames - n)
+            while idx + 1 < segs.count, t >= segs[idx + 1].start { idx += 1 }
+            var target: Double?
+            if idx < segs.count, t >= segs[idx].start, t < segs[idx].end {
+                target = segs[idx].midi
+            }
+            var inc = 0.0
+            if let m = target {
+                if !haveVoice {
+                    smoothed = m - 0.8   // onset scoop from below
+                    haveVoice = true
+                    voicedTime = 0
+                }
+                let glideK = 1 - exp(-Double(block) / (sr * 0.030))
+                smoothed += (m - smoothed) * glideK
+                voicedTime += Double(block) / sr
+                var f = PitchEngine.midiToFreq(smoothed)
+                f *= SongModel.vibratoFactor(voicedTime: voicedTime)
+                if abs(f - gainF0) > 1.5 {
+                    SongModel.formantGains(f0: f, into: &gains)
+                    gainF0 = f
+                }
+                inc = 2 * Double.pi * f / sr
+            } else {
+                haveVoice = false
+            }
+            let ampTarget: Double = target != nil ? 1.0 : 0.0
+            for i in 0..<block {
+                amp += (ampTarget - amp) * ampSlew
+                if inc > 0 { phase += inc }
+                if amp > 0.0005 {
+                    data[n + i] += Float(SongModel.tone(phase: phase, gains: gains) * amp)
+                }
+            }
+            if phase > 2 * Double.pi * 1000 { phase -= 2 * Double.pi * 1000 }
+            t += Double(block) / sr
+            n += block
         }
     }
 }
