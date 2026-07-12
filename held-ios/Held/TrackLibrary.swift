@@ -27,7 +27,7 @@ final class TrackLibrary: ObservableObject {
     init() {
         repo = UserDefaults.standard.string(forKey: "lib.repo")
             ?? Secrets.defaultRepo ?? "owner/held-tracks"
-        branch = UserDefaults.standard.string(forKey: "lib.branch") ?? "master"
+        branch = UserDefaults.standard.string(forKey: "lib.branch") ?? "main"
         token = Keychain.get("lib.token") ?? ""
         try? FileManager.default.createDirectory(
             at: Self.tracksDir, withIntermediateDirectories: true)
@@ -48,6 +48,25 @@ final class TrackLibrary: ObservableObject {
 
     private func localURL(for entry: TrackIndexEntry) -> URL {
         Self.tracksDir.appendingPathComponent("\(entry.id).json")
+    }
+
+    private func localAudioURL(for entry: TrackIndexEntry) -> URL {
+        Self.tracksDir.appendingPathComponent("\(entry.id).m4a")
+    }
+
+    private func localBackingURL(for entry: TrackIndexEntry) -> URL {
+        Self.tracksDir.appendingPathComponent("\(entry.id).backing.m4a")
+    }
+
+    func backingURL(for entry: TrackIndexEntry) -> URL? {
+        let url = localBackingURL(for: entry)
+        return FileManager.default.fileExists(atPath: url.path) ? url : nil
+    }
+
+    /// Downloaded vocal clip, if this track has one on disk.
+    func audioURL(for entry: TrackIndexEntry) -> URL? {
+        let url = localAudioURL(for: entry)
+        return FileManager.default.fileExists(atPath: url.path) ? url : nil
     }
 
     /// GitHub contents API with the raw media type. Works for public
@@ -141,6 +160,15 @@ final class TrackLibrary: ObservableObject {
             try data.write(to: localURL(for: entry))
             downloadedIDs.insert(entry.id)
             lastError = nil
+            // clips are best-effort: synth playback covers their absence
+            for (path, dest) in [(entry.audio, localAudioURL(for: entry)),
+                                 (entry.backing, localBackingURL(for: entry))] {
+                if let path, let areq = apiRequest(path),
+                   let (adata, aresp) = try? await session.data(for: areq),
+                   (aresp as? HTTPURLResponse)?.statusCode == 200 {
+                    try? adata.write(to: dest)
+                }
+            }
         } catch {
             lastError = "download failed: \(error.localizedDescription)"
         }
@@ -148,6 +176,8 @@ final class TrackLibrary: ObservableObject {
 
     func delete(_ entry: TrackIndexEntry) {
         try? FileManager.default.removeItem(at: localURL(for: entry))
+        try? FileManager.default.removeItem(at: localAudioURL(for: entry))
+        try? FileManager.default.removeItem(at: localBackingURL(for: entry))
         downloadedIDs.remove(entry.id)
     }
 

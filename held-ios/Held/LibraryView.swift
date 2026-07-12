@@ -12,6 +12,7 @@ struct LibraryView: View {
                 header
                 repoRow
                 tokenRow
+                quizCard
                 if let err = library.lastError {
                     Text(err)
                         .font(.system(size: 11, design: .monospaced))
@@ -133,6 +134,76 @@ struct LibraryView: View {
         .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 
+    private var quizTracks: [QuizModel.QuizTrack] {
+        library.entries.compactMap { e in
+            guard library.isDownloaded(e),
+                  let url = library.audioURL(for: e),
+                  let track = library.loadTrack(e), !track.notes.isEmpty
+            else { return nil }
+            return QuizModel.QuizTrack(id: e.id, title: e.title,
+                                       audioURL: url,
+                                       backingURL: library.backingURL(for: e),
+                                       notes: track.notes)
+        }
+    }
+
+    @ViewBuilder
+    private var quizCard: some View {
+        let playable = quizTracks
+        if playable.count < 2 {
+            if !library.entries.isEmpty {
+                HStack(spacing: 12) {
+                    Image(systemName: "questionmark.circle")
+                        .font(.system(size: 22))
+                        .foregroundStyle(Color.heldDim)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Name That Tune")
+                            .font(.system(size: 15, weight: .semibold, design: .serif))
+                            .foregroundStyle(Color.heldDim)
+                        Text("needs 2+ downloaded songs with vocal clips (\(playable.count)/2)")
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundStyle(Color.heldDim)
+                    }
+                    Spacer()
+                }
+                .padding(12)
+                .background(Color.heldPanel.opacity(0.6))
+                .overlay(RoundedRectangle(cornerRadius: 8)
+                    .stroke(Color.heldLine, lineWidth: 1))
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+            }
+        } else {
+            NavigationLink {
+                QuizView(tracks: playable,
+                         allTitles: library.entries.map(\.title))
+            } label: {
+                HStack(spacing: 12) {
+                    Image(systemName: "questionmark.circle.fill")
+                        .font(.system(size: 22))
+                        .foregroundStyle(Color.heldBrass)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Name That Tune")
+                            .font(.system(size: 15, weight: .semibold, design: .serif))
+                            .foregroundStyle(Color.heldText)
+                        Text("\(playable.count) songs in play")
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundStyle(Color.heldDim)
+                    }
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 12))
+                        .foregroundStyle(Color.heldDim)
+                }
+                .padding(12)
+                .background(Color.heldPanel)
+                .overlay(RoundedRectangle(cornerRadius: 8)
+                    .stroke(Color.heldBrass.opacity(0.5), lineWidth: 1))
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
     private var trackList: some View {
         ScrollView {
             LazyVStack(spacing: 10) {
@@ -174,7 +245,9 @@ struct LibraryView: View {
             if downloaded {
                 NavigationLink {
                     if let track = library.loadTrack(entry) {
-                        SongPracticeView(track: track, trackID: entry.id, engine: engine)
+                        SongPracticeView(track: track, trackID: entry.id, engine: engine,
+                                         audioURL: library.audioURL(for: entry),
+                                         backingURL: library.backingURL(for: entry))
                     } else {
                         Text("failed to load track")
                             .foregroundStyle(Color.heldRed)

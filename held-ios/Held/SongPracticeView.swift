@@ -1,13 +1,16 @@
 import SwiftUI
+import AVFAudio
 
 struct SongPracticeView: View {
     @StateObject private var model: SongModel
     @ObservedObject var engine: PitchEngine
 
-    init(track: MelodyTrack, trackID: String, engine: PitchEngine) {
+    init(track: MelodyTrack, trackID: String, engine: PitchEngine,
+         audioURL: URL? = nil, backingURL: URL? = nil) {
         self.engine = engine
         _model = StateObject(wrappedValue: SongModel(
-            track: track, trackID: trackID, pitchEngine: engine))
+            track: track, trackID: trackID, pitchEngine: engine,
+            audioURL: audioURL, backingURL: backingURL))
     }
 
     var body: some View {
@@ -21,6 +24,11 @@ struct SongPracticeView: View {
                 .clipShape(RoundedRectangle(cornerRadius: 8))
             scoreRow
             controlRow
+            if model.singingAlong, singActive, !headphonesConnected {
+                Text("speaker bleeds into the mic — use headphones for Along")
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(Color.heldRed)
+            }
             micGate
         }
         .padding(16)
@@ -128,11 +136,12 @@ struct SongPracticeView: View {
     // MARK: - Controls
 
     private var controlRow: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: 8) {
             Button { model.listen() } label: {
                 Label("Listen", systemImage: "speaker.wave.2")
-                    .font(.system(size: 15, weight: .semibold, design: .monospaced))
-                    .frame(maxWidth: .infinity).padding(.vertical, 14)
+                    .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                    .labelStyle(.titleOnly)
+                    .frame(maxWidth: .infinity).padding(.vertical, 13)
                     .contentShape(Rectangle())
             }
             .foregroundStyle(Color.heldText)
@@ -141,26 +150,56 @@ struct SongPracticeView: View {
             .clipShape(RoundedRectangle(cornerRadius: 10))
 
             Button {
-                if model.phase == .singing || model.phase == .leadIn {
-                    model.stopAll()
-                } else {
-                    model.sing()
-                }
+                if singActive { model.stopAll() } else { model.sing(along: true) }
             } label: {
-                Label(singLabel, systemImage: "mic")
-                    .font(.system(size: 15, weight: .semibold, design: .monospaced))
-                    .frame(maxWidth: .infinity).padding(.vertical, 14)
+                Text(singActive && model.singingAlong ? "…" : "Along")
+                    .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                    .frame(maxWidth: .infinity).padding(.vertical, 13)
                     .contentShape(Rectangle())
             }
-            .foregroundStyle(Color.heldBg)
-            .background(singActive ? Color.heldRed : Color.heldBrass)
+            .foregroundStyle(Color.heldBrass)
+            .background(Color.heldPanel)
+            .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.heldBrass, lineWidth: 1))
             .clipShape(RoundedRectangle(cornerRadius: 10))
             .disabled(!engine.isRunning)
             .opacity(engine.isRunning ? 1 : 0.4)
 
+            Button {
+                if singActive { model.stopAll() } else { model.sing() }
+            } label: {
+                Text(singActive && !model.singingAlong ? singLabel : "Sing")
+                    .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                    .frame(maxWidth: .infinity).padding(.vertical, 13)
+                    .contentShape(Rectangle())
+            }
+            .foregroundStyle(Color.heldBg)
+            .background(singActive && !model.singingAlong ? Color.heldRed : Color.heldBrass)
+            .clipShape(RoundedRectangle(cornerRadius: 10))
+            .disabled(!engine.isRunning)
+            .opacity(engine.isRunning ? 1 : 0.4)
+
+            if model.hasAudio {
+                Menu {
+                    ForEach(model.availableSources, id: \.self) { src in
+                        Button { model.source = src } label: {
+                            Label(src.title,
+                                  systemImage: model.source == src ? "checkmark" : src.icon)
+                        }
+                    }
+                } label: {
+                    Image(systemName: model.source.icon)
+                        .frame(width: 42, height: 44).contentShape(Rectangle())
+                }
+                .foregroundStyle(Color.heldBrass)
+                .background(Color.heldPanel)
+                .overlay(RoundedRectangle(cornerRadius: 10)
+                    .stroke(Color.heldLine, lineWidth: 1))
+                .clipShape(RoundedRectangle(cornerRadius: 10))
+            }
+
             Button { model.loop.toggle() } label: {
                 Image(systemName: "repeat")
-                    .frame(width: 48, height: 48).contentShape(Rectangle())
+                    .frame(width: 42, height: 44).contentShape(Rectangle())
             }
             .foregroundStyle(model.loop ? Color.heldBrass : Color.heldDim)
             .background(Color.heldPanel)
@@ -169,6 +208,13 @@ struct SongPracticeView: View {
             .clipShape(RoundedRectangle(cornerRadius: 10))
         }
         .buttonStyle(.plain)
+    }
+
+    private var headphonesConnected: Bool {
+        let hp: Set<AVAudioSession.Port> = [.headphones, .bluetoothA2DP,
+                                            .bluetoothHFP, .bluetoothLE]
+        return AVAudioSession.sharedInstance().currentRoute.outputs
+            .contains { hp.contains($0.portType) }
     }
 
     private var singActive: Bool {
@@ -213,11 +259,27 @@ private struct PianoRoll: View {
     var body: some View {
         Canvas { ctx, size in
             let chunk = model.chunk
-            let notes = chunk.notes
+            let scrollingPhase = model.phase == .singing || model.phase == .leadIn
+                || model.phase == .listening
+            let notes = scrollingPhase ? model.spanNotes : chunk.notes
             guard !notes.isEmpty else { return }
 
-            let t0 = chunk.start
-            let span = chunk.duration
+            // Sing/Along use a scrolling window with a fixed now-line:
+            // one spot to watch, notes flow toward it with lead time.
+            // Listen and review keep the static full-chunk layout.
+            let scrolling = scrollingPhase
+            let windowSpan = 4.0
+            let nowFraction = 0.375
+            let t0: Double
+            let span: Double
+            let heardCursor = model.cursor - model.displayLatency
+            if scrolling {
+                span = windowSpan
+                t0 = model.spanStart + heardCursor - windowSpan * nowFraction
+            } else {
+                t0 = chunk.start
+                span = chunk.duration
+            }
             let midis = notes.map { model.targetMidi($0) }
             let lo = (midis.min() ?? 48) - 2.5
             let hi = (midis.max() ?? 60) + 2.5
@@ -245,21 +307,29 @@ private struct PianoRoll: View {
                 )
             }
 
-            // target note bars
-            for note in notes {
-                let rect = CGRect(
-                    x: x(note.start),
-                    y: y(model.targetMidi(note)) - laneH / 2,
-                    width: max(3, x(note.end) - x(note.start)),
-                    height: laneH
-                )
+            // target note bars: dim span = where the word is (voice
+            // activity), bright core = where pitch is scored
+            for note in notes where !scrolling || (note.displayEnd >= t0 && note.displayStart <= t0 + span) {
+                let yy = y(model.targetMidi(note)) - laneH / 2
                 let color: Color
                 if let r = model.results[note.start] {
                     color = r.passed ? .heldGreen : .heldRed
                 } else {
                     color = .heldBrass
                 }
-                ctx.fill(Path(roundedRect: rect, cornerRadius: 3),
+                if note.displayStart < note.start || note.displayEnd > note.end {
+                    let outer = CGRect(
+                        x: x(note.displayStart), y: yy,
+                        width: max(3, x(note.displayEnd) - x(note.displayStart)),
+                        height: laneH)
+                    ctx.fill(Path(roundedRect: outer, cornerRadius: 3),
+                             with: .color(color.opacity(0.28)))
+                }
+                let core = CGRect(
+                    x: x(note.start), y: yy,
+                    width: max(3, x(note.end) - x(note.start)),
+                    height: laneH)
+                ctx.fill(Path(roundedRect: core, cornerRadius: 3),
                          with: .color(color.opacity(0.75)))
             }
 
@@ -268,16 +338,20 @@ private struct PianoRoll: View {
             var penDown = false
             for s in model.sungSamples {
                 let midi = s.midi
-                guard midi > lo, midi < hi else { penDown = false; continue }
-                let p = CGPoint(x: x(t0 + s.t), y: y(midi))
+                let ts = model.spanStart + s.t
+                guard midi > lo, midi < hi, ts >= t0, ts <= t0 + span else {
+                    penDown = false
+                    continue
+                }
+                let p = CGPoint(x: x(ts), y: y(midi))
                 if penDown { path.addLine(to: p) } else { path.move(to: p); penDown = true }
             }
             ctx.stroke(path, with: .color(Color.heldText.opacity(0.9)),
                        style: StrokeStyle(lineWidth: 2, lineJoin: .round))
 
-            // playhead
-            if model.phase != .idle && model.phase != .scored {
-                let cx = model.cursor < 0 ? 0 : x(t0 + model.cursor)
+            // playhead: fixed now-line while scrolling, moving cursor in Listen
+            if scrolling {
+                let cx = size.width * nowFraction
                 var line = Path()
                 line.move(to: CGPoint(x: cx, y: 0))
                 line.addLine(to: CGPoint(x: cx, y: size.height))

@@ -7,12 +7,18 @@ struct MelodyTrack: Codable, Identifiable {
         let end: Double
         let midi: Int
         let midiFloat: Double
+        /// Voice-activity span: where the word audibly is (consonants,
+        /// breathy tails). start/end remain the scoreable pitched core.
+        let vstart: Double?
+        let vend: Double?
 
         var id: Double { start }
         var duration: Double { end - start }
+        var displayStart: Double { vstart ?? start }
+        var displayEnd: Double { vend ?? end }
 
         enum CodingKeys: String, CodingKey {
-            case start, end, midi
+            case start, end, midi, vstart, vend
             case midiFloat = "midi_float"
         }
     }
@@ -20,6 +26,7 @@ struct MelodyTrack: Codable, Identifiable {
     struct Frames: Codable {
         let t: [Double]
         let midi: [Double?]
+        let rms: [Double]?
     }
 
     let source: String?
@@ -44,9 +51,11 @@ struct TrackIndexEntry: Codable, Identifiable, Equatable {
     let midiLo: Int
     let midiHi: Int
     let difficulty: Int?
+    let audio: String?
+    let backing: String?
 
     enum CodingKeys: String, CodingKey {
-        case id, file, title, artist, difficulty
+        case id, file, title, artist, difficulty, audio, backing
         case durationS = "duration_s"
         case noteCount = "note_count"
         case midiLo = "midi_lo"

@@ -155,3 +155,13 @@ python3 publish_track.py song.notes.json --title "Song Title"
 onto a second device — ships with the token baked in; no Songs-tab
 entry needed. The in-app token field still overrides it if set.
 Blank the file before zipping source for a handoff.
+
+## Real-vocal Listen mode
+
+Tracks published with a vocal clip (`tracks/<slug>.m4a`, produced
+automatically by `extract_melody.py` from the Demucs stem) play the
+actual isolated vocal in Listen mode — real phrasing, real timbre.
+The waveform/tuning-fork button toggles between the real vocal and
+the synth pitch-skeleton reference; loop and Sing are unchanged.
+Clips are peak-normalized 64kbps AAC (~200 KB for 30s). Tracks
+without a clip (the builtins) fall back to synth automatically.

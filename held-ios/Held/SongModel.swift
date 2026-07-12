@@ -33,6 +33,26 @@ final class SongModel: ObservableObject {
         let midi: Double
     }
 
+    enum Source: String, CaseIterable {
+        case vocal, backing, both, synth
+        var title: String {
+            switch self {
+            case .vocal: return "Vocal"
+            case .backing: return "Backing"
+            case .both: return "Vocal + Backing"
+            case .synth: return "Synth"
+            }
+        }
+        var icon: String {
+            switch self {
+            case .vocal: return "waveform"
+            case .backing: return "music.note"
+            case .both: return "music.mic"
+            case .synth: return "tuningfork"
+            }
+        }
+    }
+
     enum Phase: Equatable {
         case idle
         case listening   // synth playing the chunk
@@ -49,9 +69,24 @@ final class SongModel: ObservableObject {
         didSet { UserDefaults.standard.set(transpose, forKey: "song.transpose.\(trackID)") }
     }
     @Published var loop: Bool = false
+    private(set) var singingAlong = false
+    private var latencyOffset: Double = 0
+    /// How far the display clock should lag behind the internal clock so
+    /// bars/now-line match what the ear is hearing. Audio arrives
+    /// outputLatency after render — trivial on speaker, 100-200ms on
+    /// Bluetooth, and without this the visuals lead the voice.
+    @Published private(set) var displayLatency: Double = 0
+    @Published var source: Source {
+        didSet { UserDefaults.standard.set(source.rawValue, forKey: "song.source") }
+    }
     @Published var sungSamples: [SungSample] = []
     @Published var results: [Double: NoteResult] = [:]   // keyed by note.start
     @Published var chunkScore: Double?                   // 0..1 passed-note ratio
+    /// Continuous-run span: playback/singing starts at the selected
+    /// phrase and runs to the end of the song (or to the phrase end
+    /// when loop is on). Phrases are entry points, not walls.
+    @Published private(set) var spanStart: Double = 0
+    private var spanEnd: Double = 0
     @Published var bestChunkScore: [Int: Double] = [:]
 
     let track: MelodyTrack
@@ -60,6 +95,7 @@ final class SongModel: ObservableObject {
 
     // MARK: - Constants
     static let hitBandCents: Double = 50
+    static let legatoMaxGap: Double = 2.0
     static let leadInSeconds: Double = 1.2
     private static let breathGapSeconds: Double = 0.35
     private static let targetChunkSeconds: Double = 10.0
@@ -69,22 +105,52 @@ final class SongModel: ObservableObject {
     private let playEngine = AVAudioEngine()
     private let playerNode = AVAudioPlayerNode()
     private var playerConfigured = false
+    private let filePlayerNode = AVAudioPlayerNode()
+    private let backingPlayerNode = AVAudioPlayerNode()
+    private var configuredNodes = Set<ObjectIdentifier>()
+    private let vocalFile: AVAudioFile?
+    private let backingFile: AVAudioFile?
+    var hasAudio: Bool { vocalFile != nil || backingFile != nil }
+    var availableSources: [Source] {
+        var out: [Source] = []
+        if vocalFile != nil { out.append(.vocal) }
+        if backingFile != nil { out.append(.backing) }
+        if vocalFile != nil && backingFile != nil { out.append(.both) }
+        out.append(.synth)
+        return out
+    }
     private var clockStart: TimeInterval = 0
     private var displayTimer: Timer?
     private var pitchSub: AnyCancellable?
     private weak var pitchEngine: PitchEngine?
 
-    init(track: MelodyTrack, trackID: String, pitchEngine: PitchEngine) {
+    init(track: MelodyTrack, trackID: String, pitchEngine: PitchEngine,
+         audioURL: URL? = nil, backingURL: URL? = nil) {
         self.track = track
         self.trackID = trackID
         self.pitchEngine = pitchEngine
+        self.vocalFile = audioURL.flatMap { try? AVAudioFile(forReading: $0) }
+        self.backingFile = backingURL.flatMap { try? AVAudioFile(forReading: $0) }
+        let saved = UserDefaults.standard.string(forKey: "song.source")
+            .flatMap(Source.init(rawValue:)) ?? .vocal
+        self.source = saved
         self.chunks = Self.makeChunks(track.notes)
         self.transpose = UserDefaults.standard.object(forKey: "song.transpose.\(trackID)") as? Int ?? 0
-        let saved = UserDefaults.standard.dictionary(forKey: "song.scores.\(trackID)") as? [String: Double] ?? [:]
-        self.bestChunkScore = Dictionary(uniqueKeysWithValues: saved.compactMap {
+        if !((self.source == .vocal && self.vocalFile != nil)
+            || (self.source == .backing && self.backingFile != nil)
+            || (self.source == .both && self.vocalFile != nil && self.backingFile != nil)
+            || self.source == .synth) {
+            self.source = self.vocalFile != nil ? .vocal : .synth
+        }
+        let saved2 = UserDefaults.standard.dictionary(forKey: "song.scores.\(trackID)") as? [String: Double] ?? [:]
+        self.bestChunkScore = Dictionary(uniqueKeysWithValues: saved2.compactMap {
             guard let k = Int($0.key) else { return nil }
             return (k, $0.value)
         })
+    }
+
+    var spanNotes: [MelodyTrack.Note] {
+        track.notes.filter { $0.start >= spanStart - 0.01 && $0.start < spanEnd + 0.01 }
     }
 
     var chunk: Chunk {
@@ -174,10 +240,31 @@ final class SongModel: ObservableObject {
 
     private func resetAttempt() {
         cursor = 0
+        displayLatency = 0
+        spanStart = chunk.start
+        spanEnd = chunk.end
         sungSamples = []
         results = [:]
         chunkScore = nil
         phase = .idle
+    }
+
+    private func computeSpan() {
+        spanStart = chunk.start
+        spanEnd = loop ? chunk.end : (track.notes.last?.displayEnd ?? chunk.end)
+        // With real audio the timeline is the RECORDING, not the notes:
+        // backing runs through intros, breaks, and outros.
+        guard source != .synth, !loop else { return }
+        var audioDur = 0.0
+        if source != .backing, let f = vocalFile {
+            audioDur = max(audioDur, Double(f.length) / f.processingFormat.sampleRate)
+        }
+        if source != .vocal, let f = backingFile {
+            audioDur = max(audioDur, Double(f.length) / f.processingFormat.sampleRate)
+        }
+        guard audioDur > 0 else { return }
+        spanEnd = max(spanEnd, audioDur)
+        if chunkIndex == 0 { spanStart = 0 }
     }
 
     // MARK: - Listen (synth playback)
@@ -185,93 +272,140 @@ final class SongModel: ObservableObject {
     func listen() {
         stopAll()
         resetAttempt()
-        do { try ensurePlayer() } catch { return }
+        computeSpan()
 
-        let sr = playEngine.mainMixerNode.outputFormat(forBus: 0).sampleRate
-        let dur = chunk.duration + 0.3
-        let frames = AVAudioFrameCount(sr * dur)
-        guard
-            let fmt = AVAudioFormat(standardFormatWithSampleRate: sr, channels: 1),
-            let buf = AVAudioPCMBuffer(pcmFormat: fmt, frameCapacity: frames)
-        else { return }
-        buf.frameLength = frames
-        let data = buf.floatChannelData![0]
-        for i in 0..<Int(frames) { data[i] = 0 }
-
-        if !fillFromFrames(data: data, totalFrames: Int(frames), sr: sr) {
-            fillFromNotes(data: data, totalFrames: Int(frames), sr: sr)
+        let files = playbackFiles()
+        if files.isEmpty {
+            do { try ensurePlayer() } catch { return }
+            guard let buf = makeSynthBuffer() else { return }
+            playerNode.stop()
+            playerNode.scheduleBuffer(buf, at: nil)
+            playerNode.play()
+            displayLatency = AVAudioSession.sharedInstance().outputLatency
+            phase = .listening
+            startClock(offset: 0, total: spanEnd - spanStart) { [weak self] in
+                self?.phase = .idle
+                self?.cursor = 0
+            }
+            return
         }
 
-        playerNode.stop()
-        playerNode.scheduleBuffer(buf, at: nil)
-        playerNode.play()
+        let preRoll = min(1.0, spanStart)
+        let when = AVAudioTime(
+            hostTime: mach_absolute_time() + AVAudioTime.hostTime(forSeconds: 0.08))
+        guard scheduleFiles(files, preRoll: preRoll, at: when) else { return }
+        displayLatency = AVAudioSession.sharedInstance().outputLatency
         phase = .listening
-        startClock(offset: 0, total: chunk.duration) { [weak self] in
+        startClock(offset: -preRoll, total: spanEnd - spanStart) { [weak self] in
             self?.phase = .idle
             self?.cursor = 0
         }
     }
 
-    /// Frame-curve synthesis: follows the raw pYIN pitch track with a
-    /// phase-continuous oscillator, so scoops, glides, and vibrato play
-    /// back as a voice moves — not as quantized note jumps. Returns
-    /// false when the track has no usable frames in this chunk.
-    private func fillFromFrames(data: UnsafeMutablePointer<Float>, totalFrames: Int, sr: Double) -> Bool {
-        guard let f = track.frames, f.t.count > 2 else { return false }
-
-        // Clip frames to the chunk (with a hair of margin).
-        var ft: [Double] = []
-        var fm: [Double?] = []
-        for (i, t) in f.t.enumerated() where t >= chunk.start - 0.05 && t <= chunk.end + 0.05 {
-            ft.append(t)
-            fm.append(f.midi[i].map { $0 + Double(transpose) })
+    private func playbackFiles() -> [(AVAudioPlayerNode, AVAudioFile)] {
+        var out: [(AVAudioPlayerNode, AVAudioFile)] = []
+        if source == .vocal || source == .both, let f = vocalFile {
+            out.append((filePlayerNode, f))
         }
-        guard ft.count > 2, fm.contains(where: { $0 != nil }) else { return false }
+        if source == .backing || source == .both, let f = backingFile {
+            out.append((backingPlayerNode, f))
+        }
+        return out
+    }
 
-        // Bridge short unvoiced gaps (consonants): a voice glides
-        // through them, so interpolate pitch across gaps <= 0.15s.
-        var i = 0
-        while i < fm.count {
-            guard fm[i] == nil else { i += 1; continue }
-            let gapStart = i
-            while i < fm.count, fm[i] == nil { i += 1 }
-            let gapEnd = i
-            if gapStart > 0, gapEnd < fm.count,
-               ft[gapEnd] - ft[gapStart - 1] <= 0.15,
-               let a = fm[gapStart - 1], let b = fm[gapEnd] {
-                for j in gapStart..<gapEnd {
-                    let frac = (ft[j] - ft[gapStart - 1]) / (ft[gapEnd] - ft[gapStart - 1])
-                    fm[j] = a + (b - a) * frac
-                }
+    /// Schedules every file at the same hostTime so multi-stem playback
+    /// (vocal + backing) stays sample-locked.
+    @discardableResult
+    private func scheduleFiles(_ files: [(AVAudioPlayerNode, AVAudioFile)],
+                               preRoll: Double, at when: AVAudioTime) -> Bool {
+        var ok = false
+        for (node, file) in files {
+            guard (try? ensureNode(node, format: file.processingFormat)) != nil else { continue }
+            let sr = file.processingFormat.sampleRate
+            let startT = max(0, spanStart - preRoll)
+            let startFrame = AVAudioFramePosition(startT * sr)
+            let avail = Double(file.length) - Double(startFrame)
+            let count = AVAudioFrameCount(max(0, min((spanEnd - startT + 0.15) * sr, avail)))
+            guard count > 0 else { continue }
+            node.stop()
+            node.scheduleSegment(file, startingFrame: startFrame,
+                                 frameCount: count, at: nil)
+            node.play(at: when)
+            ok = true
+        }
+        return ok
+    }
+
+    private func makeSynthBuffer() -> AVAudioPCMBuffer? {
+        let sr = playEngine.mainMixerNode.outputFormat(forBus: 0).sampleRate
+        let dur = (spanEnd - spanStart) + 0.3
+        let frames = AVAudioFrameCount(sr * dur)
+        guard
+            let fmt = AVAudioFormat(standardFormatWithSampleRate: sr, channels: 1),
+            let buf = AVAudioPCMBuffer(pcmFormat: fmt, frameCapacity: frames)
+        else { return nil }
+        buf.frameLength = frames
+        let data = buf.floatChannelData![0]
+        for i in 0..<Int(frames) { data[i] = 0 }
+        fillLegatoNotes(data: data, totalFrames: Int(frames), sr: sr)
+        return buf
+    }
+
+    /// Clean-reference synthesis from the segmented notes: each note
+    /// holds its scored pitch and extends to the next onset (gaps up to
+    /// 2s are sung through); pitch runs through a ~30ms exponential
+    /// smoother so every note change becomes a natural portamento, and
+    /// entrances after real silence scoop up from just below. The real
+    /// vocal clip owns "sounds like the singer"; this owns "the target."
+    private func fillLegatoNotes(data: UnsafeMutablePointer<Float>, totalFrames: Int, sr: Double) {
+        let notes = spanNotes
+        guard !notes.isEmpty else { return }
+
+        struct Seg { let start: Double; let end: Double; let midi: Double }
+        var segs: [Seg] = []
+        for (i, n) in notes.enumerated() {
+            // phrase-initial onset begins where the WORD begins (vstart)
+            // so the reference and the heard vocal enter together
+            var start = n.start
+            if i == 0 || n.start - notes[i - 1].end > Self.legatoMaxGap {
+                start = n.displayStart
             }
+            var end = n.end
+            if i + 1 < notes.count,
+               notes[i + 1].start - n.end <= Self.legatoMaxGap {
+                end = notes[i + 1].start
+            } else {
+                end = n.displayEnd   // phrase tail rings through the word
+            }
+            segs.append(Seg(start: start, end: end, midi: targetMidi(n)))
         }
 
-        let t0 = ft[0]
-        let hop = (ft.last! - t0) / Double(ft.count - 1)
-        guard hop > 0 else { return false }
-
-        var phase: Double = 0
-        var amp: Double = 0
-        var voicedTime: Double = 0
+        var idx = 0
+        var phase = 0.0
+        var amp = 0.0
+        var smoothed = 0.0
+        var voicedTime = 0.0
+        var haveVoice = false
         var gains = [Double](repeating: 0, count: Self.harmonicCount)
-        var gainF0: Double = -1
-        let slew = 1 - exp(-1.0 / (sr * 0.010))   // ~10ms attack/release
+        var gainF0 = -1.0
+        let ampSlew = 1 - exp(-1.0 / (sr * 0.012))
+        let glideK = 1 - exp(-1.0 / (sr * 0.030))
 
         for n in 0..<totalFrames {
-            let t = chunk.start + Double(n) / sr
-            let p = (t - t0) / hop
-            let j = Int(p.rounded(.down))
-            var midi: Double? = nil
-            if j >= 0, j + 1 < fm.count, let a = fm[j], let b = fm[j + 1] {
-                midi = a + (b - a) * (p - Double(j))
-            } else if j >= 0, j < fm.count {
-                midi = fm[j]
-            }
+            let t = spanStart + Double(n) / sr
+            while idx + 1 < segs.count, t >= segs[idx + 1].start { idx += 1 }
+            var target: Double?
+            if t >= segs[idx].start, t < segs[idx].end { target = segs[idx].midi }
 
-            amp += ((midi != nil ? 1.0 : 0.0) - amp) * slew
-            if let m = midi {
+            if let m = target {
+                if !haveVoice {
+                    smoothed = m - 0.8   // onset scoop from below
+                    haveVoice = true
+                    voicedTime = 0
+                }
+                smoothed += (m - smoothed) * glideK
                 voicedTime += 1 / sr
-                var f = PitchEngine.midiToFreq(m)
+                var f = PitchEngine.midiToFreq(smoothed)
                 f *= Self.vibratoFactor(voicedTime: voicedTime)
                 if abs(f - gainF0) > 1.5 || n % 128 == 0 {
                     Self.formantGains(f0: f, into: &gains)
@@ -280,13 +414,14 @@ final class SongModel: ObservableObject {
                 phase += 2 * Double.pi * f / sr
                 if phase > 2 * Double.pi * 1000 { phase -= 2 * Double.pi * 1000 }
             } else {
-                voicedTime = 0
+                haveVoice = false
             }
+
+            amp += ((target != nil ? 1.0 : 0.0) - amp) * ampSlew
             if amp > 0.0005 {
                 data[n] += Float(Self.tone(phase: phase, gains: gains) * amp)
             }
         }
-        return true
     }
 
     // MARK: - Voice-like tone
@@ -334,32 +469,13 @@ final class SongModel: ObservableObject {
         return out
     }
 
-    /// Fallback for tracks without frame data: segmented notes with
-    /// legato stretching and a harmonic-rich tone.
-    private func fillFromNotes(data: UnsafeMutablePointer<Float>, totalFrames: Int, sr: Double) {
-        let sorted = chunk.notes
-        for (i, note) in sorted.enumerated() {
-            let freq = PitchEngine.midiToFreq(targetMidi(note))
-            let n0 = Int((note.start - chunk.start) * sr)
-            var nDur = note.duration
-            if i + 1 < sorted.count {
-                let gap = sorted[i + 1].start - note.end
-                if gap > 0, gap < 0.25 { nDur += gap }
-            }
-            let nFrames = Int(nDur * sr)
-            var phase: Double = 0
-            var gains = [Double](repeating: 0, count: Self.harmonicCount)
-            Self.formantGains(f0: freq, into: &gains)
-            for j in 0..<nFrames where n0 + j < totalFrames {
-                let t = Double(j) / sr
-                var env = 1.0
-                if t < 0.02 { env = t / 0.02 }
-                if t > nDur - 0.05 { env = max(0, (nDur - t) / 0.05) }
-                let f = freq * Self.vibratoFactor(voicedTime: t)
-                phase += 2 * Double.pi * f / sr
-                data[n0 + j] += Float(Self.tone(phase: phase, gains: gains) * env)
-            }
+    private func ensureNode(_ node: AVAudioPlayerNode, format: AVAudioFormat) throws {
+        if !configuredNodes.contains(ObjectIdentifier(node)) {
+            playEngine.attach(node)
+            playEngine.connect(node, to: playEngine.mainMixerNode, format: format)
+            configuredNodes.insert(ObjectIdentifier(node))
         }
+        try startEngineIfNeeded()
     }
 
     private func ensurePlayer() throws {
@@ -369,6 +485,10 @@ final class SongModel: ObservableObject {
             playEngine.connect(playerNode, to: playEngine.mainMixerNode, format: fmt)
             playerConfigured = true
         }
+        try startEngineIfNeeded()
+    }
+
+    private func startEngineIfNeeded() throws {
         if !playEngine.isRunning {
             let session = AVAudioSession.sharedInstance()
             if session.category != .playAndRecord {
@@ -382,60 +502,113 @@ final class SongModel: ObservableObject {
     // MARK: - Sing
 
     /// Requires pitchEngine.isRunning (the view enforces the Start gate).
-    func sing() {
+    /// `along: true` plays the reference (real vocal or synth, per the
+    /// source toggle) in sync while the mic scores — a headphones
+    /// feature: on speaker the playback bleeds into the detector.
+    func sing(along: Bool = false) {
         guard let engine = pitchEngine, engine.isRunning else { return }
         stopAll()
         resetAttempt()
+        singingAlong = along
+        computeSpan()
         phase = .leadIn
+
+        // You sing in time with what you HEAR. Over Bluetooth that
+        // arrives late, so shift sung samples back by the round trip
+        // or every note scores "late" through no fault of the singer.
+        let session = AVAudioSession.sharedInstance()
+        latencyOffset = along ? session.outputLatency + session.inputLatency : 0
+        displayLatency = along ? session.outputLatency : 0
+
+        if along { scheduleAlongPlayback() }
 
         pitchSub = engine.$detectedMidiFloat.sink { [weak self] midi in
             guard let self, self.phase == .singing, let midi else { return }
-            let t = ProcessInfo.processInfo.systemUptime - self.clockStart
+            let t = ProcessInfo.processInfo.systemUptime - self.clockStart - self.latencyOffset
             self.sungSamples.append(SungSample(t: t, midi: midi))
         }
 
-        startClock(offset: -Self.leadInSeconds, total: chunk.duration) { [weak self] in
+        startClock(offset: -Self.leadInSeconds, total: spanEnd - spanStart) { [weak self] in
             self?.finishSing()
+        }
+    }
+
+    /// Sample-accurate start at the end of the count-in via hostTime.
+    private func scheduleAlongPlayback() {
+        let when = AVAudioTime(
+            hostTime: mach_absolute_time()
+                + AVAudioTime.hostTime(forSeconds: Self.leadInSeconds))
+        let files = playbackFiles()
+        if files.isEmpty {
+            guard (try? ensurePlayer()) != nil, let buf = makeSynthBuffer() else { return }
+            playerNode.stop()
+            playerNode.scheduleBuffer(buf, at: nil)
+            playerNode.play(at: when)
+        } else {
+            // run-in plays during the count-in: audio position spanStart
+            // still lands exactly at clock zero
+            let preRoll = min(1.0, spanStart, Self.leadInSeconds)
+            let runIn = AVAudioTime(
+                hostTime: mach_absolute_time()
+                    + AVAudioTime.hostTime(forSeconds: Self.leadInSeconds - preRoll))
+            scheduleFiles(files, preRoll: preRoll, at: runIn)
         }
     }
 
     private func finishSing() {
         pitchSub = nil
-        score()
+        finalizeScores()
         phase = .scored
         if loop {
             Task { @MainActor [weak self] in
                 try? await Task.sleep(nanoseconds: 1_400_000_000)
                 guard let self, self.phase == .scored, self.loop else { return }
-                self.sing()
+                self.sing(along: self.singingAlong)
             }
         }
     }
 
-    private func score() {
-        var passed = 0
-        results = [:]
-        for note in chunk.notes {
-            let w0 = note.start - chunk.start + 0.08   // ignore onset scoop
-            let w1 = note.end - chunk.start
-            let windowDur = max(0.01, w1 - w0)
-            let samples = sungSamples.filter { $0.t >= w0 && $0.t <= w1 }
-            let target = targetMidi(note)
-            let hits = samples.filter {
-                abs($0.midi - target) * 100 <= Self.hitBandCents
-            }
-            // sample cadence ≈ one per audio tap (~86ms); expected count:
-            let expected = max(1.0, windowDur / 0.09)
-            let hitRatio = min(1.0, Double(hits.count) / expected)
-            let voicedRatio = min(1.0, Double(samples.count) / expected)
-            let r = NoteResult(noteID: note.start, hitRatio: hitRatio, voicedRatio: voicedRatio)
-            results[note.start] = r
-            if r.passed { passed += 1 }
+    private func scoreNote(_ note: MelodyTrack.Note) -> NoteResult {
+        let w0 = note.start - spanStart + 0.08   // ignore onset scoop
+        let w1 = note.end - spanStart
+        let windowDur = max(0.01, w1 - w0)
+        let samples = sungSamples.filter { $0.t >= w0 && $0.t <= w1 }
+        let target = targetMidi(note)
+        let hits = samples.filter {
+            abs($0.midi - target) * 100 <= Self.hitBandCents
         }
-        let s = chunk.notes.isEmpty ? 0 : Double(passed) / Double(chunk.notes.count)
-        chunkScore = s
-        if s > (bestChunkScore[chunkIndex] ?? 0) {
-            bestChunkScore[chunkIndex] = s
+        let expected = max(1.0, windowDur / 0.09)
+        return NoteResult(
+            noteID: note.start,
+            hitRatio: min(1.0, Double(hits.count) / expected),
+            voicedRatio: min(1.0, Double(samples.count) / expected)
+        )
+    }
+
+    private func finalizeScores() {
+        let notes = spanNotes
+        for note in notes where results[note.start] == nil {
+            results[note.start] = scoreNote(note)
+        }
+        guard !notes.isEmpty else { chunkScore = nil; return }
+        let passed = notes.filter { results[$0.start]?.passed == true }.count
+        chunkScore = Double(passed) / Double(notes.count)
+
+        // persist best score per phrase touched by this run
+        var dirty = false
+        for (i, phrase) in chunks.enumerated()
+        where phrase.start >= spanStart - 0.01 && phrase.start < spanEnd {
+            let pnotes = phrase.notes
+            guard !pnotes.isEmpty,
+                  pnotes.allSatisfy({ results[$0.start] != nil }) else { continue }
+            let p = Double(pnotes.filter { results[$0.start]?.passed == true }.count)
+                / Double(pnotes.count)
+            if p > (bestChunkScore[i] ?? 0) {
+                bestChunkScore[i] = p
+                dirty = true
+            }
+        }
+        if dirty {
             let dict = Dictionary(uniqueKeysWithValues: bestChunkScore.map { (String($0.key), $0.value) })
             UserDefaults.standard.set(dict, forKey: "song.scores.\(trackID)")
         }
@@ -453,6 +626,7 @@ final class SongModel: ObservableObject {
                 let t = ProcessInfo.processInfo.systemUptime - self.clockStart
                 self.cursor = t
                 if self.phase == .leadIn && t >= 0 { self.phase = .singing }
+                self.onTick(t)
                 if t >= total {
                     timer.invalidate()
                     self.displayTimer = nil
@@ -462,11 +636,30 @@ final class SongModel: ObservableObject {
         }
     }
 
+    /// While a run is in flight: keep the phrase selector following the
+    /// playhead, and score each note live as it passes the now-line.
+    private func onTick(_ t: Double) {
+        guard phase == .singing || phase == .listening else { return }
+        let now = spanStart + t
+        if let idx = chunks.lastIndex(where: { $0.start <= now + 0.01 }),
+           idx != chunkIndex, now <= spanEnd {
+            chunkIndex = idx
+        }
+        if phase == .singing {
+            for note in spanNotes
+            where results[note.start] == nil && note.end < now - 0.05 {
+                results[note.start] = scoreNote(note)
+            }
+        }
+    }
+
     func stopAll() {
         displayTimer?.invalidate()
         displayTimer = nil
         pitchSub = nil
         playerNode.stop()
+        filePlayerNode.stop()
+        backingPlayerNode.stop()
         if phase == .listening || phase == .leadIn || phase == .singing {
             phase = .idle
             cursor = 0
